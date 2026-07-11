@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QuizParty — live quiz game, no server needed</title>
+<meta name="description" content="Open-source Kahoot-style live quiz game. Host on any screen, players join on their phones. 100% peer-to-peer — no backend, no accounts, free forever.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎉</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@500;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============ HOME ============ -->
+<section id="view-home" class="view">
+  <div class="home-wrap">
+    <h1 class="logo">Quiz<span>Party!</span></h1>
+    <p class="tagline">Kahoot-style live quizzes — free, open source, no server.</p>
+    <div class="home-cards">
+      <div class="card">
+        <h2>Join a game</h2>
+        <input id="home-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Game PIN" autocomplete="off">
+        <button id="home-join" class="btn dark big">Enter</button>
+      </div>
+      <div class="card">
+        <h2>Host a game</h2>
+        <p class="muted">Create a quiz and put this screen where everyone can see it.</p>
+        <button id="home-host" class="btn primary big">My quizzes</button>
+      </div>
+    </div>
+    <footer class="home-foot">
+      <a href="https://github.com/arvindfroi/quizparty" target="_blank" rel="noopener">GitHub</a> ·
+      100% peer-to-peer · your quizzes stay in your browser
+    </footer>
+  </div>
+</section>
+
+<!-- ============ LIBRARY ============ -->
+<section id="view-library" class="view">
+  <div class="page">
+    <header class="page-head">
+      <button class="btn ghost" onclick="location.hash=''">← Home</button>
+      <h1>My quizzes</h1>
+      <div class="head-actions">
+        <button id="lib-import" class="btn">Import</button>
+        <button id="lib-new" class="btn primary">+ New quiz</button>
+      </div>
+    </header>
+    <div id="lib-list" class="quiz-list"></div>
+    <input id="lib-file" type="file" accept=".json,application/json" hidden>
+  </div>
+</section>
+
+<!-- ============ EDITOR ============ -->
+<section id="view-editor" class="view">
+  <div class="page wide">
+    <header class="page-head">
+      <button class="btn ghost" onclick="location.hash='library'">← Quizzes</button>
+      <input id="ed-title" class="title-input" placeholder="Quiz title" maxlength="80">
+      <div class="head-actions">
+        <button id="ed-export" class="btn">Export</button>
+        <button id="ed-host" class="btn primary">Host ▶</button>
+      </div>
+    </header>
+    <div class="editor-grid">
+      <aside class="q-side">
+        <div id="ed-qlist"></div>
+        <button id="ed-addq" class="btn dark full">+ Add question</button>
+      </aside>
+      <div class="q-main card" id="ed-qmain">
+        <div class="q-main-head">
+          <span id="ed-qlabel" class="muted"></span>
+          <div>
+            <button id="ed-qup" class="btn sm" title="Move up">↑</button>
+            <button id="ed-qdown" class="btn sm" title="Move down">↓</button>
+            <button id="ed-qdup" class="btn sm" title="Duplicate">⧉</button>
+            <button id="ed-qdel" class="btn sm danger" title="Delete">🗑</button>
+          </div>
+        </div>
+        <textarea id="ed-qtext" rows="2" placeholder="Type your question…" maxlength="200"></textarea>
+        <div class="q-opts">
+          <label>Time limit
+            <select id="ed-qtime">
+              <option value="5">5 s</option><option value="10">10 s</option>
+              <option value="20" selected>20 s</option><option value="30">30 s</option>
+              <option value="60">60 s</option><option value="90">90 s</option>
+            </select>
+          </label>
+          <label>Points
+            <select id="ed-qpoints">
+              <option value="standard" selected>Standard</option>
+              <option value="double">Double</option>
+              <option value="none">No points</option>
+            </select>
+          </label>
+        </div>
+        <div id="ed-answers"></div>
+        <button id="ed-adda" class="btn full">+ Add answer</button>
+        <p class="muted hint">Tick the checkbox on every correct answer (at least one).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HOST ============ -->
+<section id="view-host" class="view dark-bg">
+
+  <div id="host-connecting" class="hsub">
+    <div class="center-box"><div class="spinner"></div><p>Opening room…</p></div>
+  </div>
+
+  <div id="host-error" class="hsub">
+    <div class="center-box card"><h2>😵 Connection problem</h2><p id="host-error-msg"></p>
+      <button class="btn primary" onclick="location.reload()">Try again</button></div>
+  </div>
+
+  <div id="host-lobby" class="hsub">
+    <div class="pinbar card">
+      <div class="pin-join">Join at <b id="h-url"></b><br>with game PIN:</div>
+      <div class="pin-big" id="h-pin"></div>
+      <div id="h-qr" class="qr"></div>
+    </div>
+    <h2 id="h-quiz-title" class="on-dark"></h2>
+    <div id="h-players" class="chips"></div>
+    <p class="on-dark muted" id="h-hint">Waiting for players… (click a name to remove)</p>
+    <div class="lobby-foot">
+      <span id="h-count" class="count-pill">0</span>
+      <button id="h-start" class="btn primary big" disabled>Start</button>
+    </div>
+  </div>
+
+  <div id="host-question" class="hsub">
+    <div class="q-top">
+      <span class="q-progress" id="hq-progress"></span>
+      <h2 id="hq-text"></h2>
+    </div>
+    <div class="q-mid">
+      <div class="timer-circle" id="hq-timer"></div>
+      <div class="answered-pill"><span id="hq-answered">0</span><small>answers</small></div>
+      <button id="hq-skip" class="btn ghost-dark">Skip ⏭</button>
+    </div>
+    <div class="answer-grid" id="hq-grid"></div>
+  </div>
+
+  <div id="host-reveal" class="hsub">
+    <div class="q-top"><h2 id="hr-text"></h2></div>
+    <div class="histo" id="hr-histo"></div>
+    <div class="answer-grid" id="hr-grid"></div>
+    <div class="next-bar"><button id="hr-next" class="btn primary big">Next</button></div>
+  </div>
+
+  <div id="host-board" class="hsub">
+    <h1 class="board-title">Scoreboard</h1>
+    <div class="board" id="hb-rows"></div>
+    <div class="next-bar"><button id="hb-next" class="btn primary big">Next</button></div>
+  </div>
+
+  <div id="host-podium" class="hsub">
+    <h1 class="board-title">🏆 Podium</h1>
+    <div class="podium" id="hp-podium"></div>
+    <div class="board small" id="hp-rest"></div>
+    <div class="next-bar">
+      <button class="btn" onclick="location.hash='library'">Done</button>
+      <button id="hp-again" class="btn primary">Play again</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PLAYER ============ -->
+<section id="view-play" class="view dark-bg">
+
+  <div id="play-join" class="psub">
+    <div class="center-box">
+      <h1 class="logo sm">Quiz<span>Party!</span></h1>
+      <div class="card join-card">
+        <input id="p-pin" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="Game PIN" autocomplete="off">
+        <input id="p-name" type="text" maxlength="20" placeholder="Nickname" autocomplete="off">
+        <button id="p-join" class="btn dark big full">Join!</button>
+        <p id="p-join-err" class="err"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="play-wait" class="psub">
+    <div class="center-box">
+      <h2 class="on-dark">You're in, <span id="pw-name"></span>! 🎉</h2>
+      <p class="on-dark muted">See your name on the big screen? Waiting for the host to start…</p>
+      <div class="spinner"></div>
+    </div>
+  </div>
+
+  <div id="play-question" class="psub">
+    <div class="p-qhead">
+      <span id="pq-progress"></span>
+      <span class="p-timer" id="pq-timer"></span>
+    </div>
+    <p class="p-qtext" id="pq-text"></p>
+    <div class="answer-grid player" id="pq-grid"></div>
+  </div>
+
+  <div id="play-answered" class="psub">
+    <div class="center-box">
+      <h2 class="on-dark">Answer locked in! 🔒</h2>
+      <p class="on-dark muted">Was it the right one…?</p>
+      <div class="spinner"></div>
+    </div>
+  </div>
+
+  <div id="play-result" class="psub">
+    <div class="center-box">
+      <div id="pr-box" class="result-box">
+        <h1 id="pr-verdict"></h1>
+        <p id="pr-points" class="pr-points"></p>
+        <p id="pr-streak" class="pr-streak"></p>
+        <p id="pr-rank" class="on-dark"></p>
+      </div>
+    </div>
+  </div>
+
+  <div id="play-end" class="psub">
+    <div class="center-box">
+      <h1 class="on-dark" id="pe-medal"></h1>
+      <h2 class="on-dark" id="pe-rank"></h2>
+      <p class="on-dark muted" id="pe-score"></p>
+      <button class="btn big" onclick="location.hash=''">Home</button>
+    </div>
+  </div>
+
+  <div id="play-dropped" class="psub">
+    <div class="center-box card">
+      <h2>Connection lost</h2>
+      <p id="pd-msg" class="muted">The host ended the game or the connection dropped.</p>
+      <button class="btn primary" onclick="location.hash=''">Home</button>
+    </div>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script src="js/util.js"></script>
+<script src="js/store.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/host.js"></script>
+<script src="js/player.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
