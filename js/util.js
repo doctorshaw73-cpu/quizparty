@@ -1,7 +1,13 @@
 'use strict';
 
 const PEER_PREFIX = 'quizparty-v1-';
-const SHAPES = ['▲', '◆', '●', '■'];
+/* Shared tile glyphs/colors used by every "pick a tile" question type
+   (multiple choice, true/false, order, poll, scale). Colors c0-c7 are
+   defined in style.css. */
+const SHAPES = ['▲', '◆', '●', '■', '★', '⬟', '⬢', '✚'];
+const MAX_TILES = SHAPES.length;
+
+function clamp(n, lo, hi) { return Math.min(hi, Math.max(lo, n)); }
 
 const $ = sel => document.querySelector(sel);
 
