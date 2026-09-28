@@ -1,7 +1,9 @@
 'use strict';
 
 /* The host's browser IS the game server. It opens a PeerJS peer whose id encodes
-   the 6-digit game PIN; players connect directly over WebRTC data channels. */
+   the 6-digit game PIN; players connect directly over WebRTC data channels.
+   Question-type-specific behavior (scoring, rendering, player payloads) is
+   delegated to js/qtypes.js — this file just drives the game's phases. */
 
 let hostGame = null;
 
@@ -23,7 +25,8 @@ function startHost(quizId) {
 class HostGame {
   constructor(quiz) {
     this.quiz = quiz;
-    this.players = new Map();   // conn.connectionId -> {conn, name, score, streak, choice, answerMs}
+    this.players = new Map();   // conn.connectionId -> player state (active connections)
+    this.roster = new Map();    // pid -> player state (persists across a reconnect)
     this.qIndex = -1;
     this.phase = 'lobby';
     this.peer = null;
@@ -81,12 +84,27 @@ class HostGame {
   handleJoin(conn, d) {
     let name = String(d.name || '').trim().slice(0, 20);
     if (!name) { conn.send({ t: 'kick', reason: 'Please pick a nickname.' }); return; }
+    const pid = d.pid ? String(d.pid).slice(0, 40) : null;
     const taken = new Set([...this.players.values()].map(p => p.name.toLowerCase()));
     let final = name, n = 2;
     while (taken.has(final.toLowerCase())) final = `${name.slice(0, 17)} ${n++}`;
-    this.players.set(conn.connectionId, {
-      conn, name: final, score: 0, streak: 0, choice: null, answerMs: 0, joinedAtQ: this.qIndex,
-    });
+
+    /* A known pid reconnecting mid-game gets its score/streak back — it's
+       treated as a fresh join for the *current* question only (there's no
+       mid-question resume of remaining time/state), but nothing earned is
+       lost. See README "Known limitations". */
+    let state = pid && this.roster.get(pid);
+    if (state) {
+      state.conn = conn;
+      state.name = final;
+      state.submission = null;
+      state.answerMs = 0;
+      state.joinedAtQ = this.qIndex;
+    } else {
+      state = { conn, pid, name: final, score: 0, streak: 0, submission: null, answerMs: 0, joinedAtQ: this.qIndex };
+      if (pid) this.roster.set(pid, state);
+    }
+    this.players.set(conn.connectionId, state);
     conn.send({ t: 'welcome', name: final, inGame: this.phase !== 'lobby' });
     if (this.phase === 'lobby') this.renderPlayerChips();
   }
@@ -94,10 +112,8 @@ class HostGame {
   handleAnswer(conn, d) {
     const p = this.players.get(conn.connectionId);
     if (!p || this.phase !== 'question' || d.i !== this.qIndex) return;
-    if (p.choice !== null || p.joinedAtQ === this.qIndex) return;  // already answered / joined mid-question
-    const choice = Number(d.c);
-    if (!Number.isInteger(choice) || choice < 0 || choice >= this.question().answers.length) return;
-    p.choice = choice;
+    if (p.submission !== null || p.joinedAtQ === this.qIndex) return;  // already answered / joined mid-question
+    p.submission = (d.a && typeof d.a === 'object') ? d.a : {};
     p.answerMs = Date.now() - this.qStartedAt;
     $('#hq-answered').textContent = this.answeredCount();
     this.checkAllAnswered();
@@ -110,11 +126,27 @@ class HostGame {
   }
 
   question() { return this.quiz.questions[this.qIndex]; }
-  answeredCount() { return [...this.players.values()].filter(p => p.choice !== null).length; }
+  answeredCount() { return [...this.players.values()].filter(p => p.submission !== null).length; }
 
   checkAllAnswered() {
     const eligible = [...this.players.values()].filter(p => p.joinedAtQ !== this.qIndex);
-    if (eligible.length && eligible.every(p => p.choice !== null)) this.endQuestion();
+    if (eligible.length && eligible.every(p => p.submission !== null)) this.endQuestion();
+  }
+
+  /* ---------- media ---------- */
+
+  /* The only media ever sent to a player: image-pin's target image, which
+     the phone can't do anything useful without. Every other question type
+     keeps its media host-only (see js/media.js resolveMediaUrls/mediaHtml,
+     shared with the editor's live preview). */
+  async resolvePlayerCtx(q, type) {
+    if (!type.sendsMediaToPlayer) return {};
+    const imageDataUrl = q.media && q.media.image ? await mediaToDataUrl(q.media.image) : null;
+    return { imageDataUrl };
+  }
+
+  renderHostMedia(elId, media) {
+    $('#' + elId).innerHTML = mediaHtml(media);
   }
 
   /* ---------- lobby ---------- */
@@ -140,6 +172,7 @@ class HostGame {
         p.conn.send({ t: 'kick', reason: 'The host removed you from the game.' });
         setTimeout(() => p.conn.close(), 200);
         this.players.delete(chip.dataset.id);
+        if (p.pid) this.roster.delete(p.pid);
         this.renderPlayerChips();
       }
     };
@@ -155,12 +188,13 @@ class HostGame {
 
   /* ---------- question flow ---------- */
 
-  startQuestion(i) {
+  async startQuestion(i) {
     this.qIndex = i;
     this.phase = 'question';
     const q = this.question();
+    const type = questionTypeOf(q);
     for (const p of this.players.values()) {
-      p.choice = null;
+      p.submission = null;
       p.answerMs = 0;
       if (p.joinedAtQ >= i) p.joinedAtQ = i - 1;   // never exclude players from future questions
     }
@@ -168,19 +202,20 @@ class HostGame {
     if (i === 0) for (const p of this.players.values()) p.joinedAtQ = -1;
 
     this.qStartedAt = Date.now();
-    /* Players get only what's needed to answer — no question/answer text.
-       The full question is shown on the host/projector screen only. */
+    const [hostMedia, playerCtx] = await Promise.all([resolveMediaUrls(q.media), this.resolvePlayerCtx(q, type)]);
+    if (this.destroyed || this.qIndex !== i) return;  // torn down / skipped while media resolved
+
     this.broadcast({
-      t: 'q', i, n: this.quiz.questions.length,
-      count: q.answers.length, secs: q.time,
+      t: 'q', i, n: this.quiz.questions.length, secs: q.time, type: q.type,
+      ...type.playerPayload(q, playerCtx),
     });
 
     showSub('view-host', 'host-question');
     $('#hq-progress').textContent = `Question ${i + 1} of ${this.quiz.questions.length}`;
     $('#hq-text').textContent = q.text;
+    this.renderHostMedia('hq-media', hostMedia);
     $('#hq-answered').textContent = '0';
-    $('#hq-grid').innerHTML = q.answers.map((a, k) => `
-      <div class="answer-tile c${k}"><span class="shape">${SHAPES[k]}</span>${esc(a.text)}</div>`).join('');
+    type.hostRender($('#hq-body'), q, hostMedia);
     $('#hq-skip').onclick = () => this.endQuestion();
 
     const timerEl = $('#hq-timer');
@@ -195,26 +230,32 @@ class HostGame {
     this.ticker = setInterval(tick, 100);
   }
 
-  endQuestion() {
+  async endQuestion() {
     if (this.phase !== 'question') return;
     this.phase = 'reveal';
     clearInterval(this.ticker);
+    const qIndexAtCall = this.qIndex;
 
     const q = this.question();
-    const correctSet = new Set(q.answers.map((a, k) => a.correct ? k : -1).filter(k => k >= 0));
+    const type = questionTypeOf(q);
     const timeMs = q.time * 1000;
     const mult = q.points === 'double' ? 2 : q.points === 'none' ? 0 : 1;
 
     for (const p of this.players.values()) {
-      const gotIt = p.choice !== null && correctSet.has(p.choice);
-      let pts = 0;
-      if (gotIt) {
-        p.streak++;
-        const speed = 1 - Math.min(p.answerMs, timeMs) / timeMs / 2;  // Kahoot-style: 500–1000 base
-        pts = Math.round(1000 * speed) * mult;
-        pts += Math.min(p.streak - 1, 5) * 100 * (mult ? 1 : 0);      // streak bonus
-      } else {
-        p.streak = 0;
+      let gotIt = null, pts = 0;
+      if (type.graded) {
+        let correct = false;
+        try { correct = p.submission !== null && !!type.isCorrect(q, p.submission); }
+        catch (e) { correct = false; }
+        gotIt = correct;
+        if (correct) {
+          p.streak++;
+          const speed = 1 - Math.min(p.answerMs, timeMs) / timeMs / 2;  // Kahoot-style: 500–1000 base
+          pts = Math.round(1000 * speed) * mult;
+          pts += Math.min(p.streak - 1, 5) * 100 * (mult ? 1 : 0);      // streak bonus
+        } else {
+          p.streak = 0;
+        }
       }
       p.lastPts = pts;
       p.lastGotIt = gotIt;
@@ -226,8 +267,9 @@ class HostGame {
       if (!p.conn.open) continue;
       p.conn.send({
         t: 'reveal',
+        graded: type.graded,
         gotIt: p.lastGotIt,
-        answered: p.choice !== null,
+        answered: p.submission !== null,
         points: p.lastPts,
         score: p.score,
         streak: p.streak,
@@ -236,21 +278,11 @@ class HostGame {
       });
     }
 
-    /* host reveal screen: histogram + correct answers */
-    const counts = q.answers.map((_, k) => [...this.players.values()].filter(p => p.choice === k).length);
-    const max = Math.max(1, ...counts);
     $('#hr-text').textContent = q.text;
-    $('#hr-histo').innerHTML = counts.map((c, k) => `
-      <div class="bar-wrap">
-        <span class="bar-count">${c}</span>
-        <div class="bar c${k}" style="height:${Math.round(120 * c / max) + 6}px"></div>
-        <span class="bar-shape">${SHAPES[k]}${correctSet.has(k) ? ' ✓' : ''}</span>
-      </div>`).join('');
-    $('#hr-grid').innerHTML = q.answers.map((a, k) => `
-      <div class="answer-tile c${k} ${correctSet.has(k) ? '' : 'faded'}">
-        <span class="shape">${SHAPES[k]}</span>${esc(a.text)}
-        ${correctSet.has(k) ? '<span class="mark">✓</span>' : ''}
-      </div>`).join('');
+    const media = await resolveMediaUrls(q.media);
+    if (this.destroyed || this.qIndex !== qIndexAtCall) return;
+    this.renderHostMedia('hr-media', media);
+    type.hostReveal($('#hr-body'), q, [...this.players.values()], media);
     showSub('view-host', 'host-reveal');
 
     const last = this.qIndex === this.quiz.questions.length - 1;
@@ -297,7 +329,8 @@ class HostGame {
       </div>`).join('');
     showSub('view-host', 'host-podium');
     $('#hp-again').onclick = () => {
-      for (const p of this.players.values()) { p.score = 0; p.streak = 0; }
+      const all = new Set([...this.players.values(), ...this.roster.values()]);
+      for (const p of all) { p.score = 0; p.streak = 0; }
       this.qIndex = -1;
       this.renderLobby();
     };
