@@ -1,0 +1,9 @@
+{
+  "name": "quizparty",
+  "private": true,
+  "description": "Free, open-source Kahoot-style live quiz game with no backend.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/run-tests.js"
+  }
+}
