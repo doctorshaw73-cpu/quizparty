@@ -68,21 +68,21 @@ document.addEventListener('DOMContentLoaded', () => {
     e.target.value = '';
     if (!file) return;
     try {
-      const quiz = importQuizJson(await file.text());
+      const quiz = await importQuizJson(await file.text());
       upsertQuiz(quiz);
       renderLibrary();
     } catch (err) {
       alert('Could not import: ' + err.message);
     }
   });
-  $('#lib-list').addEventListener('click', e => {
+  $('#lib-list').addEventListener('click', async e => {
     const btn = e.target.closest('button[data-act]');
     if (!btn) return;
     const id = btn.closest('.quiz-item').dataset.id;
     const act = btn.dataset.act;
     if (act === 'host') location.hash = 'host/' + id;
     else if (act === 'edit') location.hash = 'editor/' + id;
-    else if (act === 'export') exportQuiz(getQuiz(id));
+    else if (act === 'export') await exportQuiz(getQuiz(id));
     else if (act === 'del') {
       const quiz = getQuiz(id);
       if (confirm(`Delete "${quiz.title.trim() || 'Untitled quiz'}"?`)) {
