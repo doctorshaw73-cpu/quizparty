@@ -168,9 +168,11 @@ class HostGame {
     if (i === 0) for (const p of this.players.values()) p.joinedAtQ = -1;
 
     this.qStartedAt = Date.now();
+    /* Players get only what's needed to answer — no question/answer text.
+       The full question is shown on the host/projector screen only. */
     this.broadcast({
       t: 'q', i, n: this.quiz.questions.length,
-      text: q.text, answers: q.answers.map(a => a.text), secs: q.time,
+      count: q.answers.length, secs: q.time,
     });
 
     showSub('view-host', 'host-question');

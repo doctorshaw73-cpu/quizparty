@@ -75,10 +75,11 @@ function playerOnMessage(d) {
     case 'q': {
       player.qIndex = d.i;
       $('#pq-progress').textContent = `${d.i + 1} / ${d.n}`;
-      $('#pq-text').textContent = d.text;
-      $('#pq-grid').innerHTML = d.answers.map((a, k) => `
+      /* No question/answer text is sent to players — just the shape/color
+         tile for each answer index. See the big screen for the question. */
+      $('#pq-grid').innerHTML = Array.from({ length: d.count }, (_, k) => `
         <button class="answer-tile c${k}" data-c="${k}">
-          <span class="shape">${SHAPES[k]}</span><span class="atext">${esc(a)}</span>
+          <span class="shape">${SHAPES[k]}</span>
         </button>`).join('');
       const endAt = Date.now() + d.secs * 1000;
       clearInterval(player.ticker);
