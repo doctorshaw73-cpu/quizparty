@@ -105,46 +105,85 @@ function collectMediaIds(quiz) {
   return ids;
 }
 
-/* Clones an imported field, but only if it's at least the right *shape* as
-   the type's default for that field (array vs. array, plain object vs.
-   plain object) — a malformed field (e.g. a string where `answers` should
-   be an array) falls back to the default instead of reaching host/player
-   code that assumes the real shape. */
-function safeClone(value, fallback) {
-  try {
-    const cloned = JSON.parse(JSON.stringify(value));
-    if (cloned === undefined) return fallback;
-    if (Array.isArray(fallback)) return Array.isArray(cloned) ? cloned : fallback;
-    if (fallback && typeof fallback === 'object') {
-      return (cloned && typeof cloned === 'object' && !Array.isArray(cloned)) ? cloned : fallback;
-    }
-    return cloned;
-  } catch (e) { return fallback; }
+/* ---------- media lifecycle (garbage-collecting IndexedDB blobs) ----------
+   A media id can be shared by more than one question (duplicating a
+   question copies its media ids) or, in principle, by more than one quiz,
+   so "unused" is always "not referenced by anything currently stored" —
+   never inferred from a single edit in isolation. Callers save their own
+   change first (upsertQuiz/deleteQuiz) so this check reflects the post-edit
+   truth; these are the only place that decides whether a blob gets deleted,
+   so callers should use them rather than calling deleteMedia() directly. */
+
+function isMediaReferenced(mediaId) {
+  if (!mediaId) return false;
+  return getQuizzes().some(quiz => collectMediaIds(quiz).includes(mediaId));
 }
 
-/* Rebuilds a question from imported (untrusted) JSON: known type + common
-   fields are sanitized individually, and every type-specific field falls back
-   to that type's default shape if the imported value doesn't parse cleanly. */
+/* Deletes a media blob if (and only if) nothing stored references it
+   anymore. Cleanup is a nonfatal, best-effort step: the caller's own save/
+   delete has already succeeded by the time this runs, and a failure here
+   (e.g. IndexedDB unavailable) is only logged, never thrown. */
+async function releaseMediaIfUnused(mediaId) {
+  if (!mediaId) return;
+  try {
+    if (!isMediaReferenced(mediaId)) await deleteMedia(mediaId);
+  } catch (e) {
+    console.warn('QuizParty: could not clean up unused media', mediaId, e);
+  }
+}
+
+/* Convenience for releasing several ids at once, e.g. every media id a
+   deleted question or quiz held. */
+async function releaseUnusedMedia(mediaIds) {
+  for (const id of mediaIds || []) await releaseMediaIfUnused(id);
+}
+
+/* A quiz file is fully untrusted input — cap how much of it we'll ever
+   process, independent of any per-field limits below. */
+const MAX_IMPORT_QUESTIONS = 200;
+
+/* Rebuilds a question from imported (untrusted) JSON. Common fields are
+   coerced to their expected primitive type and length; every type-specific
+   field is rebuilt from scratch by that type's own sanitize() (js/qtypes.js)
+   using only trusted primitives — never a structural clone of the input —
+   so a malformed nested value (wrong type, oversized array, NaN, an object
+   where text is expected, ...) can't reach validate()/normalize()/rendering
+   in a shape they don't expect. `media` is intentionally left empty here;
+   it's filled in separately by remapImportedMedia() once the caller knows
+   which media ids are actually referenced and safe to import (see
+   importQuizJson). */
 function sanitizeQuestion(raw) {
   const type = QUESTION_TYPE_LIST.includes(raw && raw.type) ? raw.type : 'mc';
-  const def = QuestionTypes[type].defaults();
-  const q = {
+  return {
     type,
-    text: String((raw && raw.text) || '').slice(0, 200),
+    text: safeText(raw && raw.text, 200),
     time: [5, 10, 20, 30, 60, 90].includes(+(raw && raw.time)) ? +raw.time : 20,
     points: ['standard', 'double', 'none'].includes(raw && raw.points) ? raw.points : 'standard',
     media: emptyMedia(),
+    ...QuestionTypes[type].sanitize(raw),
   };
-  for (const key of Object.keys(def)) {
-    q[key] = raw && raw[key] !== undefined ? safeClone(raw[key], def[key]) : def[key];
+}
+
+/* Every media id a raw (pre-sanitize) question references, regardless of
+   type — used so import only ever decodes media that's actually reachable
+   from a real question, not just anything listed in the file's `media` map. */
+function referencedRawMediaIds(rawQuestions) {
+  const ids = new Set();
+  for (const raw of rawQuestions) {
+    const media = raw && raw.media;
+    if (!media || typeof media !== 'object') continue;
+    for (const k of ['image', 'video', 'audio']) {
+      const id = media[k];
+      if (typeof id === 'string' && id) ids.add(id);
+    }
   }
-  return q;
+  return ids;
 }
 
 /* data: URLs referenced from a quiz's questions become local IndexedDB
    entries under fresh ids, so an imported quiz never trusts ids from the
    file (those only ever mean something in the browser that exported them). */
-async function remapImportedMedia(rawMedia, idRemap) {
+function remapImportedMedia(rawMedia, idRemap) {
   const out = emptyMedia();
   if (rawMedia && typeof rawMedia === 'object') {
     for (const k of Object.keys(out)) {
@@ -155,29 +194,58 @@ async function remapImportedMedia(rawMedia, idRemap) {
   return out;
 }
 
+/* Decodes and stores only the media entries that sanitized questions
+   actually reference, each gated by isSafeMediaDataUrl (data: URL only,
+   allow-listed MIME, size-capped — see js/media.js) and bounded by an
+   overall count/size budget so an import can't be used to smuggle
+   unbounded or unreferenced blobs into IndexedDB. Never touches the
+   network: a rejected/oversized/non-data: entry is just skipped, and the
+   rest of the quiz still imports. Returns oldId -> newId. */
+async function importMedia(rawMediaMap, referencedIds) {
+  const idRemap = {};
+  if (!rawMediaMap || typeof rawMediaMap !== 'object') return idRemap;
+  let totalBytes = 0, count = 0;
+  for (const oldId of referencedIds) {
+    if (count >= MEDIA_IMPORT_MAX_ITEMS || totalBytes >= MEDIA_IMPORT_MAX_TOTAL_BYTES) break;
+    if (!Object.prototype.hasOwnProperty.call(rawMediaMap, oldId)) continue;
+    const dataUrl = rawMediaMap[oldId];
+    const parsed = parseDataUrl(dataUrl);
+    if (!parsed || !MEDIA_MIME_ALLOWLIST.includes(parsed.mime) || parsed.decodedBytes > MEDIA_MAX_BYTES) continue;
+    if (totalBytes + parsed.decodedBytes > MEDIA_IMPORT_MAX_TOTAL_BYTES) continue;
+    try {
+      idRemap[oldId] = await saveMediaFromDataUrl(dataUrl);
+      totalBytes += parsed.decodedBytes;
+      count++;
+    } catch (e) { /* unreadable media entry — omit it, keep importing the rest */ }
+  }
+  return idRemap;
+}
+
 async function importQuizJson(text) {
   const data = JSON.parse(text);
   if (!data || typeof data.title !== 'string' || !Array.isArray(data.questions)) {
     throw new Error('Not a QuizParty quiz file');
   }
-  const idRemap = {};
-  if (data.media && typeof data.media === 'object') {
-    for (const [oldId, dataUrl] of Object.entries(data.media)) {
-      try { idRemap[oldId] = await saveMediaFromDataUrl(dataUrl); }
-      catch (e) { /* unreadable media entry — leave unmapped, question falls back to no media */ }
-    }
-  }
+  const rawQuestions = data.questions.slice(0, MAX_IMPORT_QUESTIONS);
+  const idRemap = await importMedia(data.media, referencedRawMediaIds(rawQuestions));
+
   const quiz = {
     id: uid(),
-    title: String(data.title).slice(0, 80),
-    questions: [],
+    title: safeText(data.title, 80),
+    questions: rawQuestions.map(raw => {
+      const q = sanitizeQuestion(raw);
+      q.media = remapImportedMedia(raw && raw.media, idRemap);
+      return q;
+    }),
   };
-  for (const raw of data.questions) {
-    const q = sanitizeQuestion(raw);
-    q.media = await remapImportedMedia(raw && raw.media, idRemap);
-    quiz.questions.push(q);
-  }
   if (!quiz.questions.length) throw new Error('Quiz has no questions');
+
+  /* Sanitization above is what actually keeps this safe; this call is a
+     belt-and-suspenders proof that the sanitized output never crashes the
+     same validation a normal quiz goes through before hosting. Any problems
+     found (e.g. an mc question with no correct answer marked) are left for
+     the user to fix in the editor, same as importing always worked. */
+  validateQuiz(quiz);
   return quiz;
 }
 

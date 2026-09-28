@@ -7,6 +7,10 @@
    {
      label, icon, graded, sendsMediaToPlayer,
      defaults()                          -> type-specific fields for a new question
+     sanitize(raw)                       -> type-specific fields rebuilt from untrusted
+                                             import JSON using only trusted primitives
+                                             (capped counts/lengths, coerced types) —
+                                             never a structural clone of `raw`
      validate(q)                         -> [problem strings], type-specific only
      normalize(q)                        -> cleaned copy for hosting/export
      playerPayload(q, ctx)               -> minimal object broadcast to players
@@ -25,6 +29,8 @@
 const ORDER_MAX = 6;
 const POLL_MAX = 6;
 const SCALE_MAX_POINTS = MAX_TILES;
+const TYPED_MAX_ACCEPTED = 10;
+const NUMERIC_BOUND = 1e9;   // sane absolute ceiling for imported min/max/step/correct
 
 function tileGridHtml(labels, opts) {
   /* labels: array of strings (host, shows text) or null-per-item (player, shape only) */
@@ -80,6 +86,7 @@ const QuestionTypes = {
   mc: {
     label: 'Multiple choice', icon: '🔘', graded: true,
     defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
+    sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
     validate(q) {
       const problems = [];
       const filled = q.answers.filter(a => a.text.trim());
@@ -126,6 +133,7 @@ const QuestionTypes = {
   tf: {
     label: 'True / False', icon: '☑️', graded: true,
     defaults: () => ({ correct: true }),
+    sanitize: raw => ({ correct: safeBool(raw && raw.correct, true) }),
     validate: () => [],
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
@@ -176,6 +184,7 @@ const QuestionTypes = {
   order: {
     label: 'Order / puzzle', icon: '🔀', graded: true,
     defaults: () => ({ items: [{ text: '' }, { text: '' }, { text: '' }] }),
+    sanitize: raw => ({ items: safeRows(raw && raw.items, { max: ORDER_MAX, maxLen: 100, checkbox: false }) }),
     validate(q) {
       const filled = q.items.filter(it => it.text.trim());
       return filled.length < 2 ? ['needs at least 2 items to order'] : [];
@@ -228,6 +237,10 @@ const QuestionTypes = {
   typed: {
     label: 'Typed answer', icon: '⌨️', graded: true,
     defaults: () => ({ accepted: [''] }),
+    sanitize: raw => ({
+      accepted: (Array.isArray(raw && raw.accepted) ? raw.accepted : [])
+        .slice(0, TYPED_MAX_ACCEPTED).map(a => safeText(a, 100)),
+    }),
     validate(q) {
       return q.accepted.filter(a => a.trim()).length < 1 ? ['needs at least one accepted answer'] : [];
     },
@@ -274,6 +287,15 @@ const QuestionTypes = {
   slider: {
     label: 'Slider / numeric', icon: '🎚️', graded: true,
     defaults: () => ({ min: 0, max: 100, step: 1, correct: 50 }),
+    sanitize(raw) {
+      const r = raw || {};
+      let min = clamp(safeNumber(r.min, 0), -NUMERIC_BOUND, NUMERIC_BOUND);
+      let max = clamp(safeNumber(r.max, 100), -NUMERIC_BOUND, NUMERIC_BOUND);
+      if (!(min < max)) { min = 0; max = 100; }  // inverted/equal — fall back to sane defaults
+      const step = clamp(Math.abs(safeNumber(r.step, 1)) || 1, 1e-6, NUMERIC_BOUND);
+      const correct = clamp(safeNumber(r.correct, (min + max) / 2), min, max);
+      return { min, max, step, correct };
+    },
     validate(q) {
       const problems = [];
       if (!(q.min < q.max)) problems.push('min must be less than max');
@@ -322,6 +344,7 @@ const QuestionTypes = {
   poll: {
     label: 'Poll', icon: '📊', graded: false,
     defaults: () => ({ options: [{ text: '' }, { text: '' }] }),
+    sanitize: raw => ({ options: safeRows(raw && raw.options, { max: POLL_MAX, maxLen: 100, checkbox: false }) }),
     validate(q) {
       return q.options.filter(o => o.text.trim()).length < 2 ? ['needs at least 2 options'] : [];
     },
@@ -353,6 +376,13 @@ const QuestionTypes = {
   scale: {
     label: 'Scale', icon: '📈', graded: false,
     defaults: () => ({ min: 1, max: 5, lowLabel: '', highLabel: '' }),
+    sanitize(raw) {
+      const r = raw || {};
+      let min = Math.round(clamp(safeNumber(r.min, 1), -1000, 1000));
+      let max = Math.round(clamp(safeNumber(r.max, 5), -1000, 1000));
+      if (!(min < max) || (max - min + 1) > SCALE_MAX_POINTS) { min = 1; max = 5; }
+      return { min, max, lowLabel: safeText(r.lowLabel, 30), highLabel: safeText(r.highLabel, 30) };
+    },
     validate(q) {
       const problems = [];
       if (!(q.min < q.max)) problems.push('min must be less than max');
@@ -360,7 +390,9 @@ const QuestionTypes = {
       return problems;
     },
     normalize: q => ({ ...q }),
-    playerPayload: q => ({ count: q.max - q.min + 1 }),
+    // `min` rides along so the phone can label its tiles with the real
+    // scale values (e.g. 3..7) instead of assuming a 1-based scale.
+    playerPayload: q => ({ count: q.max - q.min + 1, min: q.min }),
     isCorrect: () => null,
     hostRender(el, q) {
       el.className = '';
@@ -382,8 +414,9 @@ const QuestionTypes = {
     },
     playerControl(el, payload, submit) {
       el.className = 'answer-grid player';
+      const min = Number.isFinite(payload.min) ? payload.min : 1;  // legacy hosts pre-dating this field
       el.innerHTML = Array.from({ length: payload.count }, (_, k) => `
-        <button type="button" class="answer-tile c${k % MAX_TILES}" data-c="${k}">${k + 1}</button>`).join('');
+        <button type="button" class="answer-tile c${k % MAX_TILES}" data-c="${k}">${min + k}</button>`).join('');
       const send = fireOnce(c => submit({ c }));
       el.addEventListener('click', e => { const btn = e.target.closest('button[data-c]'); if (btn) send(+btn.dataset.c); });
     },
@@ -408,6 +441,7 @@ const QuestionTypes = {
   wordcloud: {
     label: 'Word cloud', icon: '☁️', graded: false,
     defaults: () => ({}),
+    sanitize: () => ({}),
     validate: () => [],
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
@@ -440,6 +474,7 @@ const QuestionTypes = {
   open: {
     label: 'Open-ended', icon: '📝', graded: false,
     defaults: () => ({}),
+    sanitize: () => ({}),
     validate: () => [],
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
@@ -463,6 +498,14 @@ const QuestionTypes = {
   imagepin: {
     label: 'Image pin', icon: '📍', graded: true, sendsMediaToPlayer: true,
     defaults: () => ({ pin: { x: 0.5, y: 0.5 }, tolerance: 0.08 }),
+    sanitize(raw) {
+      const r = raw || {};
+      const p = r.pin || {};
+      return {
+        pin: { x: clamp(safeNumber(p.x, 0.5), 0, 1), y: clamp(safeNumber(p.y, 0.5), 0, 1) },
+        tolerance: clamp(safeNumber(r.tolerance, 0.08), 0.01, 0.5),
+      };
+    },
     validate(q) { return (q.media && q.media.image) ? [] : ['needs an image uploaded']; },
     normalize: q => ({ ...q }),
     playerPayload: (q, ctx) => ({ image: ctx.imageDataUrl, tolerance: q.tolerance }),
@@ -510,9 +553,11 @@ const QuestionTypes = {
       el.querySelector('#qt-img').addEventListener('change', async e => {
         const file = e.target.files[0];
         if (!file) return;
+        const oldId = q.media.image;
         q.media.image = await saveMedia(file);
         onChange();
         renderPreview();
+        await releaseMediaIfUnused(oldId);
       });
       el.querySelector('#qt-tol').addEventListener('input', e => { q.tolerance = Number(e.target.value); onChange(); });
       renderPreview();

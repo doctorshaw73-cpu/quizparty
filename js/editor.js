@@ -78,8 +78,10 @@ async function edRenderPreview() {
 
 async function edSetMedia(kind, file) {
   const q = edQuiz.questions[edIndex];
+  const oldId = q.media[kind];
   q.media[kind] = await saveMedia(file);
   edSave(); edRenderMediaPreview(); edRenderPreview();
+  await releaseMediaIfUnused(oldId);
 }
 
 function initEditorEvents() {
@@ -124,9 +126,11 @@ function initEditorEvents() {
   $('#ed-media-image').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('image', e.target.files[0]); e.target.value = ''; });
   $('#ed-media-video').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('video', e.target.files[0]); e.target.value = ''; });
   $('#ed-media-audio').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('audio', e.target.files[0]); e.target.value = ''; });
-  $('#ed-media-clear').addEventListener('click', () => {
+  $('#ed-media-clear').addEventListener('click', async () => {
+    const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
     edQuiz.questions[edIndex].media = emptyMedia();
     edSave(); edRenderMediaPreview(); edRenderPreview();
+    await releaseUnusedMedia(oldIds);
   });
 
   $('#ed-qup').addEventListener('click', () => edMoveQuestion(-1));
@@ -137,7 +141,8 @@ function initEditorEvents() {
     edIndex++;
     edSave(); edRenderTabs(); edRenderQuestion();
   });
-  $('#ed-qdel').addEventListener('click', () => {
+  $('#ed-qdel').addEventListener('click', async () => {
+    const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
     if (edQuiz.questions.length === 1) {
       edQuiz.questions[0] = blankQuestion('mc');
     } else {
@@ -145,6 +150,7 @@ function initEditorEvents() {
       edIndex = Math.min(edIndex, edQuiz.questions.length - 1);
     }
     edSave(); edRenderTabs(); edRenderQuestion();
+    await releaseUnusedMedia(oldIds);
   });
 
   $('#ed-export').addEventListener('click', () => exportQuiz(edQuiz));

@@ -95,6 +95,19 @@ class HostGame {
        lost. See README "Known limitations". */
     let state = pid && this.roster.get(pid);
     if (state) {
+      /* One pid must never have more than one live entry in this.players —
+         if the old connection is still sitting in the map (it hasn't fired
+         'close' yet, or never will on a half-dead network path), drop it
+         now and close it. Its own close handler is keyed by *its*
+         connectionId, so it can't later delete the new entry we're about
+         to install. */
+      for (const [connId, p] of this.players) {
+        if (p !== state) continue;
+        this.players.delete(connId);
+        if (p.conn && p.conn !== conn && p.conn.open) {
+          try { p.conn.close(); } catch (e) { /* already gone — fine */ }
+        }
+      }
       state.conn = conn;
       state.name = final;
       state.submission = null;
@@ -201,10 +214,14 @@ class HostGame {
     /* players who joined during the lobby are eligible immediately */
     if (i === 0) for (const p of this.players.values()) p.joinedAtQ = -1;
 
-    this.qStartedAt = Date.now();
+    /* Resolve media/player-context *before* the clock starts — a large
+       image-pin image can take a moment to base64-encode, and none of that
+       should eat into the player's answer time. qStartedAt is only set once
+       everything needed to actually show and answer the question is ready. */
     const [hostMedia, playerCtx] = await Promise.all([resolveMediaUrls(q.media), this.resolvePlayerCtx(q, type)]);
     if (this.destroyed || this.qIndex !== i) return;  // torn down / skipped while media resolved
 
+    this.qStartedAt = Date.now();
     this.broadcast({
       t: 'q', i, n: this.quiz.questions.length, secs: q.time, type: q.type,
       ...type.playerPayload(q, playerCtx),

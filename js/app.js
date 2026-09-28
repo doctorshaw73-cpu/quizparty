@@ -86,8 +86,10 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (act === 'del') {
       const quiz = getQuiz(id);
       if (confirm(`Delete "${quiz.title.trim() || 'Untitled quiz'}"?`)) {
+        const mediaIds = collectMediaIds(quiz);
         deleteQuiz(id);
         renderLibrary();
+        await releaseUnusedMedia(mediaIds);
       }
     }
   });
