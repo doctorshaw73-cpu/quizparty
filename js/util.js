@@ -77,6 +77,13 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+/* In 'ws' mode (Electron desktop, or any deployment pointed at a relay)
+   players join through the public relay-backed player page instead of
+   this document's own origin — there is no LAN address or localhost
+   involved at all. In the default 'peer' mode this is unchanged from the
+   original behavior: the current page's own URL. */
 function joinUrl(pin) {
+  const cfg = getTransportConfig();
+  if (cfg.mode === 'ws') return cfg.publicPlayerBaseUrl + '#join/' + pin;
   return location.origin + location.pathname + '#join/' + pin;
 }

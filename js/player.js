@@ -56,7 +56,7 @@ function playerJoin() {
 
 function connectToHost() {
   if (player.peer) player.peer.destroy();  // drop any still-open peer from a previous attempt
-  const peer = new Peer({ debug: 1 });
+  const peer = createTransportPlayerPeer({ debug: 1 });
   player.peer = peer;
 
   const fail = msg => {

@@ -49,7 +49,7 @@ class HostGame {
   openRoom() {
     this.pin = String(Math.floor(100000 + Math.random() * 900000));
     showSub('view-host', 'host-connecting');
-    const peer = new Peer(PEER_PREFIX + this.pin, { debug: 1 });
+    const peer = createTransportHostPeer(PEER_PREFIX + this.pin, { debug: 1 });
     this.peer = peer;
     peer.on('open', () => this.renderLobby());
     peer.on('connection', conn => this.onConnection(conn));
@@ -227,7 +227,10 @@ class HostGame {
     showSub('view-host', 'host-lobby');
     $('#h-pin').textContent = this.pin;
     $('#h-quiz-title').textContent = this.quiz.title;
-    $('#h-url').textContent = location.host + location.pathname.replace(/index\.html$/, '');
+    const cfg = getTransportConfig();
+    $('#h-url').textContent = cfg.mode === 'ws'
+      ? cfg.publicPlayerBaseUrl.replace(/^https?:\/\//, '')
+      : location.host + location.pathname.replace(/index\.html$/, '');
     const qr = qrcode(0, 'M');
     qr.addData(joinUrl(this.pin));
     qr.make();
