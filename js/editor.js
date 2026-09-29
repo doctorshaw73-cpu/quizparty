@@ -77,6 +77,8 @@ async function edRenderPreview() {
 }
 
 async function edSetMedia(kind, file) {
+  const error = validateMediaFile(file, kind);
+  if (error) { alert(error); return; }
   const q = edQuiz.questions[edIndex];
   const oldId = q.media[kind];
   q.media[kind] = await saveMedia(file);

@@ -85,19 +85,48 @@ function blobToDataUrl(blob) {
   });
 }
 
+/* ---------- media policy (single source of truth) ----------
+   One set of per-kind limits, used identically by local upload
+   (editor.js's validateMediaFile) and quiz import (js/store.js importMedia)
+   — a quiz the editor lets you save must always be one the importer can
+   restore. SVG is deliberately not in the image list: rendered from a
+   data: URL it can't run script, but it can still reference external
+   resources in ways that vary by browser, which is more ambiguity than a
+   raster image needs to carry, especially for image-pin's clickable image. */
+const MEDIA_LIMITS = {
+  image: { maxBytes: 5 * 1024 * 1024, mimes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] },
+  audio: { maxBytes: 15 * 1024 * 1024, mimes: ['audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm'] },
+  video: { maxBytes: 50 * 1024 * 1024, mimes: ['video/mp4', 'video/webm', 'video/ogg'] },
+};
+const MEDIA_IMPORT_MAX_ITEMS = 30;                     // per import
+const MEDIA_IMPORT_MAX_TOTAL_BYTES = 80 * 1024 * 1024; // per import/export package
+
+/* Which policy kind a MIME type belongs to, or null if it isn't allowed
+   for any media slot. */
+function mediaKindForMime(mime) {
+  return ['image', 'audio', 'video'].find(kind => MEDIA_LIMITS[kind].mimes.includes(mime)) || null;
+}
+
+/* Validates a local File before it's ever handed to saveMedia()/IndexedDB —
+   never trust an <input accept="..."> to have actually filtered anything,
+   since it's just a UI hint. Returns a user-showable error string, or null
+   if the file is fine for that slot. */
+function validateMediaFile(file, kind) {
+  const limits = MEDIA_LIMITS[kind];
+  if (!limits) return 'Unsupported media kind.';
+  if (!file || !limits.mimes.includes(file.type)) {
+    return `That doesn't look like a supported ${kind} file${file && file.type ? ` (${file.type})` : ''}. Supported: ${limits.mimes.join(', ')}.`;
+  }
+  if (file.size > limits.maxBytes) {
+    return `That ${kind} is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). The limit is ${(limits.maxBytes / 1024 / 1024).toFixed(0)} MB.`;
+  }
+  return null;
+}
+
 /* ---------- import media safety ----------
    A quiz file is untrusted input. Everything below is pure string/length
    inspection — no fetch, no DOM, no I/O — so it can gate an imported media
    entry *before* it ever reaches dataUrlToBlob()'s fetch() call below. */
-
-const MEDIA_MIME_ALLOWLIST = [
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml',
-  'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm',
-  'video/mp4', 'video/webm', 'video/ogg',
-];
-const MEDIA_MAX_BYTES = 8 * 1024 * 1024;              // per item
-const MEDIA_IMPORT_MAX_ITEMS = 30;                    // per import
-const MEDIA_IMPORT_MAX_TOTAL_BYTES = 60 * 1024 * 1024; // per import
 
 const DATA_URL_RE = /^data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+)(;[^,]*)?,(.*)$/s;
 
@@ -120,15 +149,19 @@ function parseDataUrl(value) {
   return { mime, decodedBytes };
 }
 
-/* True only for a well-formed data: URL with an allow-listed MIME type and a
-   decoded size within MEDIA_MAX_BYTES. This is the single gate every
+/* True only for a well-formed data: URL whose MIME belongs to the given
+   kind's allow-list (or, with no kind given, to any kind's) and whose
+   decoded size is within that kind's limit. This is the single gate every
    imported media entry must pass before it can reach fetch()/IndexedDB —
    http:, https:, blob:, file:, javascript:, and any other scheme are always
    rejected here since parseDataUrl() only recognizes `data:`. */
-function isSafeMediaDataUrl(value) {
-  if (typeof value !== 'string' || value.length > MEDIA_MAX_BYTES * 2) return false; // cheap pre-check
+function isSafeMediaDataUrl(value, kind) {
+  if (typeof value !== 'string' || value.length > 200 * 1024 * 1024) return false; // cheap pre-check
   const parsed = parseDataUrl(value);
-  return !!parsed && MEDIA_MIME_ALLOWLIST.includes(parsed.mime) && parsed.decodedBytes <= MEDIA_MAX_BYTES;
+  if (!parsed) return false;
+  const actualKind = mediaKindForMime(parsed.mime);
+  if (!actualKind || (kind && actualKind !== kind)) return false;
+  return parsed.decodedBytes <= MEDIA_LIMITS[actualKind].maxBytes;
 }
 
 async function dataUrlToBlob(dataUrl) {
@@ -144,9 +177,10 @@ async function mediaToDataUrl(id) {
 
 /* For import: store an embedded data: URL and return its new local id.
    Guarded by isSafeMediaDataUrl so this (and the fetch() it triggers) never
-   runs on anything but a validated data: URL, even if called directly. */
-async function saveMediaFromDataUrl(dataUrl) {
-  if (!isSafeMediaDataUrl(dataUrl)) throw new Error('Unsafe or invalid media data URL');
+   runs on anything but a validated data: URL of the expected kind, even if
+   called directly. */
+async function saveMediaFromDataUrl(dataUrl, kind) {
+  if (!isSafeMediaDataUrl(dataUrl, kind)) throw new Error('Unsafe or invalid media data URL');
   const blob = await dataUrlToBlob(dataUrl);
   return saveMedia(blob);
 }

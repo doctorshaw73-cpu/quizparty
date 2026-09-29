@@ -97,12 +97,22 @@ function normalizeQuiz(quiz) {
   return { ...quiz, questions: quiz.questions.map(q => questionTypeOf(q).normalize(q)) };
 }
 
-function collectMediaIds(quiz) {
-  const ids = [];
+/* Every {id, kind} a quiz's questions reference — the kind comes from which
+   slot (image/video/audio) the id is stored under, which is also the
+   expected kind for validating that blob's actual MIME (see exportQuiz). */
+function collectMediaRefs(quiz) {
+  const refs = [];
   quiz.questions.forEach(q => {
-    if (q.media) Object.values(q.media).forEach(id => { if (id) ids.push(id); });
+    if (!q.media) return;
+    for (const kind of ['image', 'video', 'audio']) {
+      if (q.media[kind]) refs.push({ id: q.media[kind], kind });
+    }
   });
-  return ids;
+  return refs;
+}
+
+function collectMediaIds(quiz) {
+  return collectMediaRefs(quiz).map(r => r.id);
 }
 
 /* ---------- media lifecycle (garbage-collecting IndexedDB blobs) ----------
@@ -164,20 +174,24 @@ function sanitizeQuestion(raw) {
   };
 }
 
-/* Every media id a raw (pre-sanitize) question references, regardless of
-   type — used so import only ever decodes media that's actually reachable
-   from a real question, not just anything listed in the file's `media` map. */
+/* Every media id a raw (pre-sanitize) question references, mapped to the
+   slot (image/video/audio) it's referenced from — used so import only ever
+   decodes media that's actually reachable from a real question (not just
+   anything listed in the file's `media` map), and validated against the
+   MIME/size limit for that specific slot's kind (see importMedia). The
+   first slot seen for a given id wins if a hostile file reuses one id
+   across different kinds. */
 function referencedRawMediaIds(rawQuestions) {
-  const ids = new Set();
+  const kindById = new Map();
   for (const raw of rawQuestions) {
     const media = raw && raw.media;
     if (!media || typeof media !== 'object') continue;
-    for (const k of ['image', 'video', 'audio']) {
-      const id = media[k];
-      if (typeof id === 'string' && id) ids.add(id);
+    for (const kind of ['image', 'video', 'audio']) {
+      const id = media[kind];
+      if (typeof id === 'string' && id && !kindById.has(id)) kindById.set(id, kind);
     }
   }
-  return ids;
+  return kindById;
 }
 
 /* data: URLs referenced from a quiz's questions become local IndexedDB
@@ -195,25 +209,26 @@ function remapImportedMedia(rawMedia, idRemap) {
 }
 
 /* Decodes and stores only the media entries that sanitized questions
-   actually reference, each gated by isSafeMediaDataUrl (data: URL only,
-   allow-listed MIME, size-capped — see js/media.js) and bounded by an
+   actually reference, each gated by isSafeMediaDataUrl for the SLOT it's
+   referenced from (data: URL only, MIME must match that slot's kind,
+   size-capped per kind — see MEDIA_LIMITS in js/media.js) and bounded by an
    overall count/size budget so an import can't be used to smuggle
    unbounded or unreferenced blobs into IndexedDB. Never touches the
-   network: a rejected/oversized/non-data: entry is just skipped, and the
-   rest of the quiz still imports. Returns oldId -> newId. */
-async function importMedia(rawMediaMap, referencedIds) {
+   network: a rejected/oversized/wrong-MIME/non-data: entry is just skipped,
+   and the rest of the quiz still imports. Returns oldId -> newId. */
+async function importMedia(rawMediaMap, kindById) {
   const idRemap = {};
   if (!rawMediaMap || typeof rawMediaMap !== 'object') return idRemap;
   let totalBytes = 0, count = 0;
-  for (const oldId of referencedIds) {
+  for (const [oldId, kind] of kindById) {
     if (count >= MEDIA_IMPORT_MAX_ITEMS || totalBytes >= MEDIA_IMPORT_MAX_TOTAL_BYTES) break;
     if (!Object.prototype.hasOwnProperty.call(rawMediaMap, oldId)) continue;
     const dataUrl = rawMediaMap[oldId];
     const parsed = parseDataUrl(dataUrl);
-    if (!parsed || !MEDIA_MIME_ALLOWLIST.includes(parsed.mime) || parsed.decodedBytes > MEDIA_MAX_BYTES) continue;
+    if (!parsed || mediaKindForMime(parsed.mime) !== kind || parsed.decodedBytes > MEDIA_LIMITS[kind].maxBytes) continue;
     if (totalBytes + parsed.decodedBytes > MEDIA_IMPORT_MAX_TOTAL_BYTES) continue;
     try {
-      idRemap[oldId] = await saveMediaFromDataUrl(dataUrl);
+      idRemap[oldId] = await saveMediaFromDataUrl(dataUrl, kind);
       totalBytes += parsed.decodedBytes;
       count++;
     } catch (e) { /* unreadable media entry — omit it, keep importing the rest */ }
@@ -252,17 +267,39 @@ async function importQuizJson(text) {
 /* Plain-text quizzes export exactly as before (no `media` key at all) so the
    format stays compatible with older QuizParty versions and with quizzes
    shared before media support existed. Only quizzes that actually reference
-   local media gain an embedded `media` map of id -> data: URL. */
+   local media gain an embedded `media` map of id -> data: URL.
+
+   Every item is checked against the exact same MEDIA_LIMITS/kind rules
+   importMedia() will apply on the other end, so an export can never produce
+   a package its own importer would later reject — anything that wouldn't
+   survive that round trip is left out and the user is told plainly what and
+   why, instead of it silently vanishing. */
 async function exportQuiz(quiz) {
   const clean = normalizeQuiz(quiz);
   delete clean.id;
-  const mediaIds = collectMediaIds(clean);
+  const refs = collectMediaRefs(clean);
   let payload = clean;
-  if (mediaIds.length) {
+  if (refs.length) {
     const media = {};
-    for (const id of mediaIds) {
-      const dataUrl = await mediaToDataUrl(id);
-      if (dataUrl) media[id] = dataUrl;
+    const skipped = [];
+    let totalBytes = 0;
+    const done = new Set();
+    for (const { id, kind } of refs) {
+      if (done.has(id)) continue;  // shared media (a duplicated question) — encode once
+      done.add(id);
+      const blob = await getMediaBlob(id);
+      const limits = MEDIA_LIMITS[kind];
+      if (!blob) continue;
+      if (!limits.mimes.includes(blob.type)) { skipped.push(`${kind} (unsupported type ${blob.type || 'unknown'})`); continue; }
+      if (blob.size > limits.maxBytes) { skipped.push(`${kind} (over the ${(limits.maxBytes / 1024 / 1024).toFixed(0)} MB limit)`); continue; }
+      if (totalBytes + blob.size > MEDIA_IMPORT_MAX_TOTAL_BYTES) { skipped.push(`${kind} (export size limit reached)`); continue; }
+      media[id] = await blobToDataUrl(blob);
+      totalBytes += blob.size;
+    }
+    if (skipped.length) {
+      alert(`This export won't include ${skipped.length} media file(s) that can't be portably re-imported:\n\n` +
+        skipped.map(s => '• ' + s).join('\n') +
+        `\n\nEverything else — including the rest of the quiz — was exported normally. Those questions will need their media re-attached after importing elsewhere.`);
     }
     payload = { ...clean, media };
   }
