@@ -40,10 +40,11 @@ const EXPORTED_NAMES = [
   'validateQuiz', 'normalizeQuiz', 'blankQuestion', 'retypeQuestion', 'migrateQuiz', 'sanitizeQuestion',
   'getQuizzes', 'saveQuizzes', 'getQuiz', 'upsertQuiz', 'deleteQuiz', 'newQuiz', 'emptyMedia', 'collectMediaIds',
   'importQuizJson', 'exportQuiz', 'referencedRawMediaIds', 'importMedia', 'remapImportedMedia', 'MAX_IMPORT_QUESTIONS',
-  'isMediaReferenced', 'releaseMediaIfUnused', 'releaseUnusedMedia',
-  'isSafeMediaDataUrl', 'parseDataUrl', 'MEDIA_MIME_ALLOWLIST', 'MEDIA_MAX_BYTES',
+  'isMediaReferenced', 'releaseMediaIfUnused', 'releaseUnusedMedia', 'collectMediaRefs',
+  'isSafeMediaDataUrl', 'parseDataUrl', 'MEDIA_LIMITS', 'mediaKindForMime', 'validateMediaFile',
   'MEDIA_IMPORT_MAX_ITEMS', 'MEDIA_IMPORT_MAX_TOTAL_BYTES',
-  'saveMediaFromDataUrl', 'deleteMedia', 'getMediaUrl', 'mediaToDataUrl', 'resolveMediaUrls', 'mediaHtml',
+  'saveMediaFromDataUrl', 'deleteMedia', 'getMediaUrl', 'getMediaBlob', 'blobToDataUrl',
+  'mediaToDataUrl', 'resolveMediaUrls', 'mediaHtml',
 ];
 
 /* `.ctx` is the raw vm context (the actual global object of that realm) —
@@ -52,7 +53,7 @@ const EXPORTED_NAMES = [
    identifier lookups inside the loaded scripts resolve through this same
    object for anything declared with `function`/`var`. */
 function loadSandbox() {
-  const sandbox = { console };
+  const sandbox = { console, alert() {} };
   sandbox.localStorage = makeLocalStorage();
   vm.createContext(sandbox);
   for (const f of ['js/util.js', 'js/media.js', 'js/qtypes.js', 'js/store.js']) {
@@ -472,9 +473,45 @@ test('isSafeMediaDataUrl: only a well-formed, allow-listed, size-bounded data: U
   assert.strictEqual(sb.isSafeMediaDataUrl({}), false);
 });
 
-test('isSafeMediaDataUrl: rejects a payload larger than the per-item limit', (sb) => {
-  const hugeBase64 = 'A'.repeat(Math.ceil(sb.MEDIA_MAX_BYTES / 3) * 4 + 100);
+test('isSafeMediaDataUrl: rejects a payload larger than that kind\'s limit', (sb) => {
+  const hugeBase64 = 'A'.repeat(Math.ceil(sb.MEDIA_LIMITS.image.maxBytes / 3) * 4 + 100);
   assert.strictEqual(sb.isSafeMediaDataUrl(`data:image/png;base64,${hugeBase64}`), false);
+});
+
+test('isSafeMediaDataUrl: SVG is not an allowed image MIME (excluded to limit active-content ambiguity)', (sb) => {
+  const svgBase64 = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>').toString('base64');
+  assert.strictEqual(sb.isSafeMediaDataUrl(`data:image/svg+xml;base64,${svgBase64}`, 'image'), false);
+  assert.strictEqual(sb.isSafeMediaDataUrl(`data:image/svg+xml;base64,${svgBase64}`), false);
+});
+
+test('isSafeMediaDataUrl: a kind argument rejects a MIME from the wrong kind', (sb) => {
+  const audioAsImage = `data:audio/mpeg;base64,${TINY_PNG_BASE64}`;
+  assert.strictEqual(sb.isSafeMediaDataUrl(audioAsImage, 'image'), false);
+  assert.strictEqual(sb.isSafeMediaDataUrl(audioAsImage, 'audio'), true);
+});
+
+test('mediaKindForMime: maps every allow-listed MIME to its kind, rejects the rest', (sb) => {
+  assert.strictEqual(sb.mediaKindForMime('image/png'), 'image');
+  assert.strictEqual(sb.mediaKindForMime('audio/mpeg'), 'audio');
+  assert.strictEqual(sb.mediaKindForMime('video/mp4'), 'video');
+  assert.strictEqual(sb.mediaKindForMime('image/svg+xml'), null);
+  assert.strictEqual(sb.mediaKindForMime('text/html'), null);
+  assert.strictEqual(sb.mediaKindForMime('application/octet-stream'), null);
+});
+
+test('validateMediaFile: boundary size, wrong MIME for the slot, and SVG are all rejected', (sb) => {
+  assert.strictEqual(sb.validateMediaFile({ type: 'image/png', size: sb.MEDIA_LIMITS.image.maxBytes }, 'image'), null,
+    'exactly at the limit must be accepted');
+  assert.ok(sb.validateMediaFile({ type: 'image/png', size: sb.MEDIA_LIMITS.image.maxBytes + 1 }, 'image'),
+    'one byte over the limit must be rejected');
+  assert.ok(sb.validateMediaFile({ type: 'audio/mpeg', size: 1000 }, 'image'),
+    'an audio file must be rejected from the image slot');
+  assert.ok(sb.validateMediaFile({ type: 'image/svg+xml', size: 1000 }, 'image'),
+    'SVG must be rejected for the image slot');
+  assert.strictEqual(sb.validateMediaFile({ type: 'audio/ogg', size: sb.MEDIA_LIMITS.audio.maxBytes }, 'audio'), null);
+  assert.ok(sb.validateMediaFile({ type: 'audio/ogg', size: sb.MEDIA_LIMITS.audio.maxBytes + 1 }, 'audio'));
+  assert.strictEqual(sb.validateMediaFile({ type: 'video/webm', size: sb.MEDIA_LIMITS.video.maxBytes }, 'video'), null);
+  assert.ok(sb.validateMediaFile({ type: 'video/webm', size: sb.MEDIA_LIMITS.video.maxBytes + 1 }, 'video'));
 });
 
 test('saveMediaFromDataUrl: throws before fetch for an unsafe URL, never calls fetch', async (sb) => {
@@ -533,6 +570,73 @@ test('importQuizJson: enforces a max media item count', async (sb) => {
   }
   await sb.importQuizJson(JSON.stringify({ title: 'Many media', questions, media }));
   assert.strictEqual(calls, sb.MEDIA_IMPORT_MAX_ITEMS);
+});
+
+test('importQuizJson: a media entry whose real MIME does not match its slot is rejected', async (sb) => {
+  const saveCalls = [];
+  sb.ctx.saveMediaFromDataUrl = async (dataUrl, kind) => { saveCalls.push({ dataUrl, kind }); return 'fake-id'; };
+  const raw = {
+    title: 'Mismatched slot',
+    questions: [{
+      type: 'imagepin',
+      media: { image: 'not-really-an-image' },
+      pin: { x: 0.5, y: 0.5 }, tolerance: 0.1,
+    }],
+    // The id is referenced from the *image* slot, but the bytes are audio.
+    media: { 'not-really-an-image': `data:audio/mpeg;base64,${TINY_PNG_BASE64}` },
+  };
+  const quiz = await sb.importQuizJson(JSON.stringify(raw));
+  assert.deepStrictEqual(saveCalls, [], 'audio bytes referenced from the image slot must never be imported');
+  assert.strictEqual(quiz.questions[0].media.image, null);
+});
+
+test('export -> import round trip: everything the exporter includes, the importer accepts', async (sb) => {
+  sb.ctx.document = { createElement: () => ({ click() {} }) };
+  sb.ctx.URL = { createObjectURL: () => 'blob:fake', revokeObjectURL() {} };
+  let captured = null;
+  sb.ctx.Blob = class { constructor(parts) { captured = parts[0]; } };
+
+  const fakeBlobs = {
+    'img-ok': { type: 'image/png', size: 1000 },
+    'aud-ok': { type: 'audio/mpeg', size: 2000 },
+    'vid-ok': { type: 'video/mp4', size: 3000 },
+    'img-big': { type: 'image/png', size: sb.MEDIA_LIMITS.image.maxBytes + 1 },
+    'img-wrong-mime': { type: 'application/octet-stream', size: 1000 },
+  };
+  sb.ctx.getMediaBlob = async id => fakeBlobs[id] || null;
+  sb.ctx.blobToDataUrl = async blob => `data:${blob.type};base64,${TINY_PNG_BASE64}`;
+
+  const mkQ = (i, media) => ({ type: 'mc', text: 'Q' + i, media, time: 20, points: 'standard', answers: [{ text: 'a', correct: true }, { text: 'b', correct: false }] });
+  const quiz = {
+    id: 'q1', title: 'Round Trip',
+    questions: [
+      mkQ(1, { image: 'img-ok', video: null, audio: null }),
+      mkQ(2, { image: null, video: 'vid-ok', audio: 'aud-ok' }),
+      mkQ(3, { image: 'img-big', video: null, audio: null }),
+      mkQ(4, { image: 'img-wrong-mime', video: null, audio: null }),
+    ],
+  };
+
+  await sb.exportQuiz(quiz);
+  assert.ok(captured, 'export should have produced a JSON payload');
+  const exportedJson = captured;
+  const exported = JSON.parse(exportedJson);
+  assert.ok(exported.media['img-ok']);
+  assert.ok(exported.media['vid-ok']);
+  assert.ok(exported.media['aud-ok']);
+  assert.ok(!exported.media['img-big'], 'an oversized image must be left out of the export, not silently included');
+  assert.ok(!exported.media['img-wrong-mime'], 'a blob whose MIME is not an allowed image type must be left out');
+
+  // Feed the export straight back into the importer and confirm every media
+  // item the export DID include is one the importer accepts.
+  let saveCount = 0;
+  sb.ctx.saveMediaFromDataUrl = async () => { saveCount++; return 'new-id-' + saveCount; };
+  const imported = await sb.importQuizJson(exportedJson);
+  assert.strictEqual(saveCount, 3, 'all three exported media items must be accepted by import');
+  assert.ok(imported.questions[0].media.image);
+  assert.ok(imported.questions[1].media.video);
+  assert.ok(imported.questions[1].media.audio);
+  assert.strictEqual(imported.questions[2].media.image, null, 'the item the export excluded was never in the file to import');
 });
 
 /* ================= regression: orphaned IndexedDB media cleanup (issue #6) ================= */
@@ -700,6 +804,288 @@ test('reconnect: repeated reconnects of the same pid still leave exactly one ent
   }
   assert.strictEqual(game.players.size, 1);
   assert.ok(game.players.has('conn4'));
+}, { loader: loadGameSandbox });
+
+/* ================= regression: host-side submission sanitization (issue #1) ================= */
+/* handleAnswer() is called directly with hostile/malformed payloads — the
+   phone's own HTML controls (maxlength, range, a disabled button) are not
+   validation, so the host must never trust d.a as-is. */
+
+function mkPlayer(conn) {
+  return { conn, pid: null, name: 'X', score: 0, streak: 0, submission: null, answerMs: 0, joinedAtQ: -1 };
+}
+
+/* A permanent second player who never answers keeps checkAllAnswered() from
+   ever completing, so a valid answer in these tests can't trigger a
+   fire-and-forget endQuestion() (which would flip `phase` away from
+   'question' mid-test, and — for image-pin — touch real IndexedDB). */
+function addNonAnsweringDummy(game) {
+  game.players.set('dummy', mkPlayer(fakeConn('dummy')));
+}
+
+test('handleAnswer/mc: rejects NaN/Infinity/strings/objects/negative/out-of-range indexes', (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'mc', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] }] };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  for (const bad of [NaN, Infinity, -Infinity, 'x', {}, [], -1, 2, 1.5, null, undefined]) {
+    const p = mkPlayer(conn);
+    game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { c: bad } });
+    assert.strictEqual(p.submission, null, `mc must reject c=${JSON.stringify(bad)}`);
+  }
+  const good = mkPlayer(conn);
+  game.players.set('c1', good);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { c: 1 } });
+  jsonEqual(good.submission, { c: 1 });
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/tf & poll & scale: same tile-index rules as mc', (sb) => {
+  const quiz = {
+    title: 'T',
+    questions: [
+      { type: 'tf', text: 'Q1', media: sb.emptyMedia(), time: 20, points: 'standard', correct: true },
+      { type: 'poll', text: 'Q2', media: sb.emptyMedia(), time: 20, points: 'none', options: [{ text: 'A' }, { text: 'B' }, { text: 'C' }] },
+      { type: 'scale', text: 'Q3', media: sb.emptyMedia(), time: 20, points: 'none', min: 3, max: 7, lowLabel: '', highLabel: '' },
+    ],
+  };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  const conn = fakeConn('c1');
+
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  for (const bad of [2, -1, 'x', {}]) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { c: bad } });
+    assert.strictEqual(p.submission, null, `tf must reject c=${JSON.stringify(bad)}`);
+  }
+
+  game.qIndex = 1; game.phase = 'question'; game.qStartedAt = Date.now();
+  const pollBad = mkPlayer(conn); game.players.set('c1', pollBad);
+  game.handleAnswer(conn, { t: 'a', i: 1, a: { c: 99 } });
+  assert.strictEqual(pollBad.submission, null);
+
+  game.qIndex = 2; game.phase = 'question'; game.qStartedAt = Date.now();
+  const scaleBad = mkPlayer(conn); game.players.set('c1', scaleBad);
+  game.handleAnswer(conn, { t: 'a', i: 2, a: { c: 5 } }); // scale has only 5 tiles (indexes 0..4)
+  assert.strictEqual(scaleBad.submission, null);
+  const scaleGood = mkPlayer(conn); game.players.set('c1', scaleGood);
+  game.handleAnswer(conn, { t: 'a', i: 2, a: { c: 4 } });
+  jsonEqual(scaleGood.submission, { c: 4 });
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/order: exact length, integer indexes in range, no duplicates', (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'order', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', items: [{ text: 'A' }, { text: 'B' }, { text: 'C' }] }] };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  const hostile = [
+    'not-an-array', { 0: 0, 1: 1, 2: 2 }, [0, 1], [0, 1, 2, 3], [0, 1, 1],
+    [0, 1, '2'], [0, 1, 99], [0, -1, 2], [0.5, 1, 2], null,
+  ];
+  for (const bad of hostile) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { order: bad } });
+    assert.strictEqual(p.submission, null, `order must reject ${JSON.stringify(bad)}`);
+  }
+  const good = mkPlayer(conn); game.players.set('c1', good);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { order: [2, 0, 1] } });
+  jsonEqual(good.submission, { order: [2, 0, 1] });
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/typed & wordcloud & open: only real strings, coerced and capped to the phone\'s own limits', (sb) => {
+  const quiz = {
+    title: 'T',
+    questions: [
+      { type: 'typed', text: 'Q1', media: sb.emptyMedia(), time: 20, points: 'standard', accepted: ['answer'] },
+      { type: 'wordcloud', text: 'Q2', media: sb.emptyMedia(), time: 20, points: 'none' },
+      { type: 'open', text: 'Q3', media: sb.emptyMedia(), time: 20, points: 'none' },
+    ],
+  };
+  const game = new sb.HostGame(quiz);
+  const conn = fakeConn('c1');
+
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  for (const bad of [{}, [], 123, null, undefined, true]) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { text: bad } });
+    assert.strictEqual(p.submission, null, `typed must reject text=${JSON.stringify(bad)}`);
+  }
+  const longTyped = mkPlayer(conn); game.players.set('c1', longTyped);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { text: 'x'.repeat(500) } });
+  assert.strictEqual(longTyped.submission.text.length, 60, 'typed must cap to the phone\'s 60-char maxlength');
+
+  game.qIndex = 1; game.phase = 'question'; game.qStartedAt = Date.now();
+  const wcBad = mkPlayer(conn); game.players.set('c1', wcBad);
+  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: {} } });
+  assert.strictEqual(wcBad.submission, null);
+  const wcLong = mkPlayer(conn); game.players.set('c1', wcLong);
+  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: 'y'.repeat(500) } });
+  assert.strictEqual(wcLong.submission.text.length, 24, 'word cloud must cap to 24 characters');
+
+  game.qIndex = 2; game.phase = 'question'; game.qStartedAt = Date.now();
+  const openBad = mkPlayer(conn); game.players.set('c1', openBad);
+  game.handleAnswer(conn, { t: 'a', i: 2, a: { text: [] } });
+  assert.strictEqual(openBad.submission, null);
+  const openLong = mkPlayer(conn); game.players.set('c1', openLong);
+  game.handleAnswer(conn, { t: 'a', i: 2, a: { text: 'z'.repeat(1000) } });
+  assert.strictEqual(openLong.submission.text.length, 240, 'open-ended must cap to 240 characters');
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/slider: rejects non-numbers/NaN/Infinity, clamps out-of-range to min/max', (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'slider', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', min: 0, max: 10, step: 1, correct: 5 }] };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  for (const bad of ['5', {}, [], NaN, Infinity, -Infinity, null, undefined, true]) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { value: bad } });
+    assert.strictEqual(p.submission, null, `slider must reject value=${JSON.stringify(bad)}`);
+  }
+  const over = mkPlayer(conn); game.players.set('c1', over);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { value: 999 } });
+  assert.strictEqual(over.submission.value, 10, 'out-of-range value must be clamped to max');
+  const under = mkPlayer(conn); game.players.set('c1', under);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { value: -999 } });
+  assert.strictEqual(under.submission.value, 0, 'out-of-range value must be clamped to min');
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/imagepin: requires finite numeric x/y, constrains both to [0,1]', (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'imagepin', text: 'Q', media: { image: 'img1', video: null, audio: null }, time: 20, points: 'standard', pin: { x: 0.5, y: 0.5 }, tolerance: 0.1 }] };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);  // also matters here: a valid answer would otherwise trigger endQuestion -> resolveMediaUrls -> real IndexedDB
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  for (const bad of [{ x: '0.5', y: 0.5 }, { x: NaN, y: 0.5 }, { x: Infinity, y: 0.5 }, { x: {}, y: 0.5 }, { x: 0.5 }, {}]) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: bad });
+    assert.strictEqual(p.submission, null, `imagepin must reject ${JSON.stringify(bad)}`);
+  }
+  const over = mkPlayer(conn); game.players.set('c1', over);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { x: 5, y: -5 } });
+  jsonEqual(over.submission, { x: 1, y: 0 }, 'out-of-range coordinates must be clamped to [0,1]');
+}, { loader: loadGameSandbox });
+
+test('handleAnswer: every type rejects pure garbage without throwing or storing anything', (sb) => {
+  for (const type of sb.QUESTION_TYPE_LIST) {
+    const quiz = { title: 'T', questions: [{ type, text: 'Q', media: type === 'imagepin' ? { image: 'img1', video: null, audio: null } : sb.emptyMedia(), time: 20, points: 'standard', ...sb.QuestionTypes[type].defaults() }] };
+    const game = new sb.HostGame(quiz);
+    game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+    const conn = fakeConn('c1');
+    const p = mkPlayer(conn);
+    game.players.set('c1', p);
+    for (const garbage of [42, 'str', [1, 2, 3], { c: {}, order: 'x', text: {}, value: {}, x: {}, y: {} }, null]) {
+      assert.doesNotThrow(() => game.handleAnswer(conn, { t: 'a', i: 0, a: garbage }), `${type} handleAnswer threw on ${JSON.stringify(garbage)}`);
+    }
+    assert.strictEqual(p.submission, null, `${type} must not have stored any garbage submission`);
+  }
+}, { loader: loadGameSandbox });
+
+test('handleAnswer: a rejected submission still leaves endQuestion/hostReveal safe to run', async (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'mc', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] }] };
+  const game = new sb.HostGame(quiz);
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  const p = mkPlayer(conn);
+  game.players.set('c1', p);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { c: 'garbage' } });
+  assert.strictEqual(p.submission, null);
+  await assert.doesNotReject(() => game.endQuestion());
+  game.destroy();
+}, { loader: loadGameSandbox });
+
+/* ================= regression: image-pin preload/ready protocol (issue #2) ================= */
+
+function imagepinQuiz() {
+  return { title: 'T', questions: [{ type: 'imagepin', text: 'Q', media: { image: 'img1', video: null, audio: null }, time: 20, points: 'standard', pin: { x: 0.5, y: 0.5 }, tolerance: 0.1 }] };
+}
+
+/* startQuestion resolves BOTH the host's own display media (resolveMediaUrls
+   -> getMediaUrl, an object URL) and the player's payload (resolvePlayerCtx
+   -> mediaToDataUrl, a data: URL) — both touch IndexedDB for a real image id,
+   so both need stubbing to keep these tests headless. */
+function stubImagepinMedia(sb) {
+  sb.ctx.mediaToDataUrl = async () => 'data:image/png;base64,FAKE';
+  sb.ctx.getMediaUrl = async () => 'blob:fake-host-url';
+}
+
+test('imagepin: startQuestion waits for a READY ack before starting the clock', async (sb) => {
+  stubImagepinMedia(sb);
+  const game = new sb.HostGame(imagepinQuiz());
+  game.preloadTimeoutMs = 5000;  // long enough that only an explicit ready, not the timeout, should resolve this
+  const conn = fakeConn('c1');
+  game.players.set('c1', mkPlayer(conn));
+
+  const p = game.startQuestion(0);
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(game.qStartedAt, undefined, 'must not start the clock before the ready ack arrives');
+
+  game.handleReady(conn, { i: 0 });
+  await p;
+  game.destroy();
+  assert.ok(Number.isFinite(game.qStartedAt), 'clock should start once the ack arrives');
+}, { loader: loadGameSandbox });
+
+test('imagepin: proceeds after a timeout if a player never acknowledges', async (sb) => {
+  stubImagepinMedia(sb);
+  const game = new sb.HostGame(imagepinQuiz());
+  game.preloadTimeoutMs = 50;  // short, for the test
+  game.players.set('c1', mkPlayer(fakeConn('c1')));
+  const before = Date.now();
+  await game.startQuestion(0);
+  game.destroy();
+  assert.ok(Date.now() - before >= 45, 'should wait roughly the timeout before proceeding without the ack');
+  assert.ok(Number.isFinite(game.qStartedAt));
+}, { loader: loadGameSandbox });
+
+test('mc: startQuestion never incurs the image-pin preload/ready wait', async (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'mc', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] }] };
+  const game = new sb.HostGame(quiz);
+  game.preloadTimeoutMs = 5000;  // if mc wrongly entered the wait path, this test would be slow
+  game.players.set('c1', mkPlayer(fakeConn('c1')));
+  const before = Date.now();
+  await game.startQuestion(0);
+  game.destroy();
+  assert.ok(Date.now() - before < 200, 'a normal question type must not wait for any preload ack');
+}, { loader: loadGameSandbox });
+
+test('imagepin: a stale READY for a different question index is ignored', async (sb) => {
+  stubImagepinMedia(sb);
+  const game = new sb.HostGame(imagepinQuiz());
+  game.preloadTimeoutMs = 5000;
+  const conn = fakeConn('c1');
+  game.players.set('c1', mkPlayer(conn));
+
+  const p = game.startQuestion(0);
+  await new Promise(r => setTimeout(r, 20));
+  game.handleReady(conn, { i: 99 });  // stale/irrelevant index
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(game.qStartedAt, undefined, 'a ready ack for a different index must not resolve the wait');
+
+  game.handleReady(conn, { i: 0 });  // the real one
+  await p;
+  game.destroy();
+  assert.ok(Number.isFinite(game.qStartedAt));
+}, { loader: loadGameSandbox });
+
+test('preload/ready: a disconnect during the wait is dropped from pending, not left to time out', async (sb) => {
+  stubImagepinMedia(sb);
+  const game = new sb.HostGame(imagepinQuiz());
+  game.preloadTimeoutMs = 5000;
+  const connA = fakeConn('connA'), connB = fakeConn('connB');
+  game.players.set('connA', mkPlayer(connA));
+  game.players.set('connB', mkPlayer(connB));
+
+  const p = game.startQuestion(0);
+  await new Promise(r => setTimeout(r, 20));
+  game.removeFromPendingReady('connA');  // simulate connA's own close handler firing
+  game.handleReady(connB, { i: 0 });
+  await p;
+  game.destroy();
+  assert.ok(Number.isFinite(game.qStartedAt), 'should proceed once the only remaining eligible player acks');
 }, { loader: loadGameSandbox });
 
 /* ---------- runner ---------- */
