@@ -100,6 +100,19 @@ function handleDisconnect() {
 function playerOnMessage(d) {
   if (!d || typeof d !== 'object') return;
   switch (d.t) {
+    /* Sent ahead of a question whose type needs something on the phone
+       before it can be answered (currently just image-pin's image). We
+       decode it now and ack, so the host's timer — which waits for this ack
+       — doesn't start until the image is actually ready to show. */
+    case 'preload': {
+      const ack = () => { if (player.conn && player.conn.open) player.conn.send({ t: 'ready', i: d.i }); };
+      const img = new Image();
+      img.src = d.image;
+      if (img.decode) img.decode().then(ack).catch(ack);
+      else { img.onload = ack; img.onerror = ack; }
+      break;
+    }
+
     case 'welcome':
       $('#p-join').disabled = false;
       $('#pw-name').textContent = d.name;
