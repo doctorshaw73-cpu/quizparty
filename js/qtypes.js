@@ -11,6 +11,15 @@
                                              import JSON using only trusted primitives
                                              (capped counts/lengths, coerced types) —
                                              never a structural clone of `raw`
+     sanitizeSubmission(q, raw)          -> the trusted shape for a player's answer, or
+                                             null to reject it outright — called by
+                                             js/host.js handleAnswer() BEFORE a submission
+                                             is ever stored, so a modified/hostile phone
+                                             client can't get an out-of-range index, an
+                                             oversized string, or a non-numeric value past
+                                             the host into scoring/hostReveal()/rendering.
+                                             Never trusts the phone's own HTML controls
+                                             (maxlength, range min/max, ...) as validation.
      validate(q)                         -> [problem strings], type-specific only
      normalize(q)                        -> cleaned copy for hosting/export
      playerPayload(q, ctx)               -> minimal object broadcast to players
@@ -45,6 +54,16 @@ function tileGridHtml(labels, opts) {
 function fireOnce(fn) {
   let done = false;
   return (...args) => { if (done) return; done = true; fn(...args); };
+}
+
+/* Shared by every tile-choice type (mc/tf/order/poll/scale): a submitted
+   tile index must be a real integer strictly within [0, count) — NaN,
+   Infinity, strings, objects, negative and out-of-range values are all
+   rejected outright (returns null) rather than coerced, since an index has
+   no safe "clamped" meaning. */
+function safeTileIndex(raw, count) {
+  const c = raw && raw.c;
+  return Number.isInteger(c) && c >= 0 && c < count ? { c } : null;
 }
 
 /* ---------- shared row editor (answers / options / items / accepted) ---------- */
@@ -97,6 +116,7 @@ const QuestionTypes = {
     normalize: q => ({ ...q, answers: q.answers.filter(a => a.text.trim()) }),
     playerPayload: q => ({ count: q.answers.length }),
     isCorrect: (q, s) => !!s && Number.isInteger(s.c) && !!q.answers[s.c] && !!q.answers[s.c].correct,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.answers.length),
     hostRender(el, q) { el.innerHTML = tileGridHtml(q.answers.map(a => a.text)); el.className = 'answer-grid'; },
     hostReveal(el, q, players) {
       const correctSet = new Set(q.answers.map((a, k) => a.correct ? k : -1).filter(k => k >= 0));
@@ -138,6 +158,7 @@ const QuestionTypes = {
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
     isCorrect: (q, s) => !!s && Number.isInteger(s.c) && (s.c === 0) === !!q.correct,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, 2),
     hostRender(el, q) {
       el.className = 'answer-grid';
       el.innerHTML = `
@@ -195,6 +216,19 @@ const QuestionTypes = {
       if (!s || !Array.isArray(s.order) || s.order.length !== q.items.length) return false;
       return s.order.every((v, i) => v === i);
     },
+    /* Exact length, every entry a real integer in range, and no duplicates
+       (a repeated index would otherwise let a submission dodge ever
+       including some other tile while still passing a naive length check). */
+    sanitizeSubmission(q, raw) {
+      const order = raw && raw.order;
+      if (!Array.isArray(order) || order.length !== q.items.length) return null;
+      const seen = new Set();
+      for (const v of order) {
+        if (!Number.isInteger(v) || v < 0 || v >= q.items.length || seen.has(v)) return null;
+        seen.add(v);
+      }
+      return { order: order.slice() };
+    },
     hostRender(el, q) {
       el.className = '';
       el.innerHTML = `<p class="muted" style="text-align:center;margin-bottom:.5rem">Players tap the shapes on their phone in this order:</p>
@@ -251,6 +285,9 @@ const QuestionTypes = {
       const norm = s.text.trim().toLowerCase();
       return norm !== '' && q.accepted.some(a => a.trim().toLowerCase() === norm);
     },
+    // 60 matches the phone's own <input maxlength="60"> — never trust that
+    // control alone, since a modified client can send anything.
+    sanitizeSubmission: (q, raw) => (raw && typeof raw.text === 'string') ? { text: raw.text.trim().slice(0, 60) } : null,
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">⌨️ Players are typing their answer on their phones…</p>`; },
     hostReveal(el, q, players) {
       const rows = players.filter(p => p.submission).map(p => `
@@ -309,6 +346,14 @@ const QuestionTypes = {
       const tol = Math.max(q.step, (q.max - q.min) * 0.03);
       return Math.abs(s.value - q.correct) <= tol;
     },
+    // A non-finite/non-number value is rejected outright; an in-range-type
+    // value outside [min, max] (only reachable by a modified client — a real
+    // <input type=range> can't produce one) is clamped into range instead.
+    sanitizeSubmission(q, raw) {
+      const value = raw && raw.value;
+      if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+      return { value: clamp(value, q.min, q.max) };
+    },
     hostRender(el, q) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">🎚️ Answer between <b>${q.min}</b> and <b>${q.max}</b></p>`; },
     hostReveal(el, q, players) {
       const vals = players.filter(p => p.submission && Number.isFinite(p.submission.value)).map(p => p.submission.value);
@@ -351,6 +396,7 @@ const QuestionTypes = {
     normalize: q => ({ ...q, options: q.options.filter(o => o.text.trim()) }),
     playerPayload: q => ({ count: q.options.length }),
     isCorrect: () => null,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.options.length),
     hostRender(el, q) { el.innerHTML = tileGridHtml(q.options.map(o => o.text)); el.className = 'answer-grid'; },
     hostReveal(el, q, players) {
       const counts = q.options.map((_, k) => players.filter(p => p.submission && p.submission.c === k).length);
@@ -394,6 +440,7 @@ const QuestionTypes = {
     // scale values (e.g. 3..7) instead of assuming a 1-based scale.
     playerPayload: q => ({ count: q.max - q.min + 1, min: q.min }),
     isCorrect: () => null,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.max - q.min + 1),
     hostRender(el, q) {
       el.className = '';
       const n = q.max - q.min + 1;
@@ -446,6 +493,7 @@ const QuestionTypes = {
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
     isCorrect: () => null,
+    sanitizeSubmission: (q, raw) => (raw && typeof raw.text === 'string') ? { text: raw.text.trim().slice(0, 24) } : null,
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">☁️ Players are submitting a word or short phrase…</p>`; },
     hostReveal(el, q, players) {
       const freq = new Map();
@@ -479,6 +527,7 @@ const QuestionTypes = {
     normalize: q => ({ ...q }),
     playerPayload: () => ({}),
     isCorrect: () => null,
+    sanitizeSubmission: (q, raw) => (raw && typeof raw.text === 'string') ? { text: raw.text.slice(0, 240) } : null,
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">📝 Players are writing a response on their phones…</p>`; },
     hostReveal(el, q, players) {
       const rows = players.filter(p => p.submission && p.submission.text).map(p => `
@@ -512,6 +561,11 @@ const QuestionTypes = {
     isCorrect(q, s) {
       if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return false;
       return Math.hypot(s.x - q.pin.x, s.y - q.pin.y) <= q.tolerance;
+    },
+    sanitizeSubmission(q, raw) {
+      const x = raw && raw.x, y = raw && raw.y;
+      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
     },
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">📍 Players are tapping their guess on their phones…</p>`; },
     hostReveal(el, q, players, media) {
@@ -553,6 +607,8 @@ const QuestionTypes = {
       el.querySelector('#qt-img').addEventListener('change', async e => {
         const file = e.target.files[0];
         if (!file) return;
+        const error = validateMediaFile(file, 'image');
+        if (error) { alert(error); e.target.value = ''; return; }
         const oldId = q.media.image;
         q.media.image = await saveMedia(file);
         onChange();

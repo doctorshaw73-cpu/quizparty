@@ -7,6 +7,13 @@
 
 let hostGame = null;
 
+/* How long the host waits for every eligible phone to acknowledge a
+   required preload (currently just image-pin's image) before starting the
+   question anyway — long enough for a slow decode, short enough that one
+   broken device can't stall the room. Overridable per-instance (see
+   HostGame.preloadTimeoutMs) so tests don't have to wait for real timeouts. */
+const PRELOAD_TIMEOUT_MS = 6000;
+
 function startHost(quizId) {
   const stored = getQuiz(quizId);
   if (!stored) { location.hash = 'library'; return; }
@@ -33,6 +40,8 @@ class HostGame {
     this.ticker = null;
     this.idTries = 0;
     this.destroyed = false;
+    this.preloadTimeoutMs = PRELOAD_TIMEOUT_MS;
+    this.pendingReady = null;  // { qIndex, pending: Set<connectionId>, resolve }
   }
 
   /* ---------- room / connections ---------- */
@@ -68,6 +77,7 @@ class HostGame {
   onConnection(conn) {
     conn.on('data', d => this.onMessage(conn, d));
     conn.on('close', () => {
+      this.removeFromPendingReady(conn.connectionId);
       if (this.players.delete(conn.connectionId)) {
         if (this.phase === 'lobby') this.renderPlayerChips();
         if (this.phase === 'question') this.checkAllAnswered();
@@ -79,6 +89,39 @@ class HostGame {
     if (!d || typeof d !== 'object') return;
     if (d.t === 'join') this.handleJoin(conn, d);
     else if (d.t === 'a') this.handleAnswer(conn, d);
+    else if (d.t === 'ready') this.handleReady(conn, d);
+  }
+
+  /* ---------- content preload (e.g. image-pin's image) ---------- */
+
+  /* A connection that's gone (real disconnect, or superseded by a
+     reconnect) can never send its 'ready' ack — drop it from whatever
+     preload wait is active so it can't stall the game until the timeout. */
+  removeFromPendingReady(connId) {
+    const pr = this.pendingReady;
+    if (pr && pr.pending.delete(connId) && pr.pending.size === 0) pr.resolve();
+  }
+
+  handleReady(conn, d) {
+    const pr = this.pendingReady;
+    if (!pr || d.i !== pr.qIndex) return;  // stale ack for a question we've moved past — ignore
+    pr.pending.delete(conn.connectionId);
+    if (pr.pending.size === 0) pr.resolve();
+  }
+
+  /* Resolves once every connectionId in `connIds` has ack'd question `i`,
+     or after this.preloadTimeoutMs, whichever comes first. */
+  waitForReady(i, connIds) {
+    if (!connIds.length) return Promise.resolve();
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimeout(timer);
+        this.pendingReady = null;
+        resolve();
+      };
+      const timer = setTimeout(finish, this.preloadTimeoutMs);
+      this.pendingReady = { qIndex: i, pending: new Set(connIds), resolve: finish };
+    });
   }
 
   handleJoin(conn, d) {
@@ -104,6 +147,7 @@ class HostGame {
       for (const [connId, p] of this.players) {
         if (p !== state) continue;
         this.players.delete(connId);
+        this.removeFromPendingReady(connId);
         if (p.conn && p.conn !== conn && p.conn.open) {
           try { p.conn.close(); } catch (e) { /* already gone — fine */ }
         }
@@ -126,7 +170,21 @@ class HostGame {
     const p = this.players.get(conn.connectionId);
     if (!p || this.phase !== 'question' || d.i !== this.qIndex) return;
     if (p.submission !== null || p.joinedAtQ === this.qIndex) return;  // already answered / joined mid-question
-    p.submission = (d.a && typeof d.a === 'object') ? d.a : {};
+
+    /* The phone's own HTML controls (maxlength, range min/max, a disabled
+       button) are not validation — a modified client can send anything.
+       Every submission is rebuilt into a trusted shape by the question
+       type itself before it's ever stored; a submission that can't be made
+       safe is rejected outright and simply isn't recorded (the player can
+       still answer again until time runs out). */
+    const q = this.question();
+    const type = questionTypeOf(q);
+    let submission = null;
+    try { submission = type.sanitizeSubmission ? type.sanitizeSubmission(q, d.a) : null; }
+    catch (e) { submission = null; }
+    if (!submission || typeof submission !== 'object') return;
+
+    p.submission = submission;
     p.answerMs = Date.now() - this.qStartedAt;
     $('#hq-answered').textContent = this.answeredCount();
     this.checkAllAnswered();
@@ -220,6 +278,20 @@ class HostGame {
        everything needed to actually show and answer the question is ready. */
     const [hostMedia, playerCtx] = await Promise.all([resolveMediaUrls(q.media), this.resolvePlayerCtx(q, type)]);
     if (this.destroyed || this.qIndex !== i) return;  // torn down / skipped while media resolved
+
+    /* Content a phone must have before it can answer at all (currently just
+       image-pin's target image) is sent ahead of the timed question and
+       acknowledged before the clock starts — otherwise a slow transfer/
+       decode over the data channel would eat into the player's answer time
+       exactly like the media-resolve delay above. Question types with
+       nothing required on the phone (the vast majority) skip this
+       entirely, so they incur no extra wait. */
+    if (type.sendsMediaToPlayer && playerCtx.imageDataUrl) {
+      const eligible = [...this.players.entries()].filter(([, p]) => p.joinedAtQ !== i && p.conn.open);
+      for (const [, p] of eligible) p.conn.send({ t: 'preload', i, image: playerCtx.imageDataUrl });
+      await this.waitForReady(i, eligible.map(([connId]) => connId));
+      if (this.destroyed || this.qIndex !== i) return;  // torn down / skipped while waiting
+    }
 
     this.qStartedAt = Date.now();
     this.broadcast({
@@ -356,6 +428,7 @@ class HostGame {
   destroy() {
     this.destroyed = true;
     clearInterval(this.ticker);
+    if (this.pendingReady) this.pendingReady.resolve();
     if (this.peer) this.peer.destroy();
   }
 }
