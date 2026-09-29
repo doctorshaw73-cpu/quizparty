@@ -1,6 +1,10 @@
 'use strict';
 
-/* Quiz editor. Edits `edQuiz` in place and auto-saves to localStorage on every change. */
+/* Quiz editor. Edits `edQuiz` in place and auto-saves to localStorage on every
+   change. Type-specific fields (answers/options/items/etc.) and the live
+   preview are rendered through the js/qtypes.js registry — this file wires
+   the common controls (title, type picker, time/points, media) and the
+   slide-sorter sidebar. */
 let edQuiz = null;
 let edIndex = 0;
 
@@ -10,6 +14,10 @@ function renderEditor(quizId) {
   edIndex = 0;
   showView('view-editor');
   $('#ed-title').value = edQuiz.title;
+  if (!$('#ed-qtype').options.length) {
+    $('#ed-qtype').innerHTML = QUESTION_TYPE_LIST.map(t =>
+      `<option value="${t}">${QuestionTypes[t].icon} ${QuestionTypes[t].label}</option>`).join('');
+  }
   edRenderTabs();
   edRenderQuestion();
 }
@@ -21,7 +29,7 @@ function edSave() {
 function edRenderTabs() {
   $('#ed-qlist').innerHTML = edQuiz.questions.map((q, i) => `
     <button class="q-tab ${i === edIndex ? 'sel' : ''}" data-i="${i}">
-      <small>${i + 1}</small>${esc(q.text.trim() || 'Untitled question')}
+      <small>${i + 1}</small><span class="q-tab-icon">${questionTypeOf(q).icon}</span>${esc(q.text.trim() || 'Untitled question')}
     </button>`).join('');
 }
 
@@ -29,17 +37,53 @@ function edRenderQuestion() {
   const q = edQuiz.questions[edIndex];
   if (!q) return;
   $('#ed-qlabel').textContent = `Question ${edIndex + 1} of ${edQuiz.questions.length}`;
+  $('#ed-qtype').value = q.type;
   $('#ed-qtext').value = q.text;
   $('#ed-qtime').value = String(q.time);
   $('#ed-qpoints').value = q.points;
-  $('#ed-answers').innerHTML = q.answers.map((a, i) => `
-    <div class="ans-row" data-i="${i}">
-      <div class="ans-swatch c${i}">${SHAPES[i]}</div>
-      <input type="text" maxlength="100" placeholder="Answer ${i + 1}${i >= 2 ? ' (optional)' : ''}" value="${esc(a.text)}">
-      <input type="checkbox" title="Correct answer" ${a.correct ? 'checked' : ''}>
-      ${q.answers.length > 2 ? '<button class="btn sm" data-act="rm" title="Remove">✕</button>' : ''}
-    </div>`).join('');
-  $('#ed-adda').style.display = q.answers.length < 4 ? '' : 'none';
+  edRenderMediaPreview();
+  edRenderTypeBody();
+  edRenderPreview();
+}
+
+function edRenderTypeBody() {
+  const q = edQuiz.questions[edIndex];
+  questionTypeOf(q).editorRender($('#ed-type-body'), q, rerender => {
+    edSave(); edRenderTabs(); edRenderPreview();
+    if (rerender) edRenderTypeBody();
+  });
+}
+
+function edRenderMediaPreview() {
+  const q = edQuiz.questions[edIndex];
+  resolveMediaUrls(q.media).then(urls => { $('#ed-media-preview').innerHTML = mediaHtml(urls); });
+}
+
+async function edRenderPreview() {
+  const q = edQuiz.questions[edIndex];
+  if (!q) return;
+  const type = questionTypeOf(q);
+  const media = await resolveMediaUrls(q.media);
+
+  const hostEl = $('#ed-preview-host');
+  hostEl.innerHTML = `<div class="q-media">${mediaHtml(media)}</div><h4>${esc(q.text || '(question text)')}</h4><div class="preview-body"></div>`;
+  type.hostRender(hostEl.querySelector('.preview-body'), q, media);
+
+  const ctx = type.sendsMediaToPlayer && q.media.image ? { imageDataUrl: await mediaToDataUrl(q.media.image) } : {};
+  const payload = { type: q.type, secs: q.time, ...type.playerPayload(q, ctx) };
+  const playerEl = $('#ed-preview-player');
+  playerEl.innerHTML = '';
+  type.playerControl(playerEl, payload, () => {}); // preview only — submissions go nowhere
+}
+
+async function edSetMedia(kind, file) {
+  const error = validateMediaFile(file, kind);
+  if (error) { alert(error); return; }
+  const q = edQuiz.questions[edIndex];
+  const oldId = q.media[kind];
+  q.media[kind] = await saveMedia(file);
+  edSave(); edRenderMediaPreview(); edRenderPreview();
+  await releaseMediaIfUnused(oldId);
 }
 
 function initEditorEvents() {
@@ -58,43 +102,37 @@ function initEditorEvents() {
   });
 
   $('#ed-addq').addEventListener('click', () => {
-    edQuiz.questions.push(blankQuestion());
+    edQuiz.questions.push(blankQuestion('mc'));
     edIndex = edQuiz.questions.length - 1;
+    edSave(); edRenderTabs(); edRenderQuestion();
+  });
+
+  $('#ed-qtype').addEventListener('change', e => {
+    edQuiz.questions[edIndex] = retypeQuestion(edQuiz.questions[edIndex], e.target.value);
     edSave(); edRenderTabs(); edRenderQuestion();
   });
 
   $('#ed-qtext').addEventListener('input', e => {
     edQuiz.questions[edIndex].text = e.target.value;
-    edSave(); edRenderTabs();
+    edSave(); edRenderTabs(); edRenderPreview();
   });
   $('#ed-qtime').addEventListener('change', e => {
     edQuiz.questions[edIndex].time = +e.target.value;
-    edSave();
+    edSave(); edRenderPreview();
   });
   $('#ed-qpoints').addEventListener('change', e => {
     edQuiz.questions[edIndex].points = e.target.value;
     edSave();
   });
 
-  $('#ed-answers').addEventListener('input', e => {
-    const row = e.target.closest('.ans-row');
-    if (!row) return;
-    const a = edQuiz.questions[edIndex].answers[+row.dataset.i];
-    if (e.target.type === 'text') a.text = e.target.value;
-    if (e.target.type === 'checkbox') a.correct = e.target.checked;
-    edSave();
-  });
-  $('#ed-answers').addEventListener('click', e => {
-    const btn = e.target.closest('button[data-act="rm"]');
-    if (!btn) return;
-    const row = btn.closest('.ans-row');
-    edQuiz.questions[edIndex].answers.splice(+row.dataset.i, 1);
-    edSave(); edRenderQuestion();
-  });
-  $('#ed-adda').addEventListener('click', () => {
-    const q = edQuiz.questions[edIndex];
-    if (q.answers.length < 4) q.answers.push({ text: '', correct: false });
-    edSave(); edRenderQuestion();
+  $('#ed-media-image').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('image', e.target.files[0]); e.target.value = ''; });
+  $('#ed-media-video').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('video', e.target.files[0]); e.target.value = ''; });
+  $('#ed-media-audio').addEventListener('change', e => { if (e.target.files[0]) edSetMedia('audio', e.target.files[0]); e.target.value = ''; });
+  $('#ed-media-clear').addEventListener('click', async () => {
+    const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
+    edQuiz.questions[edIndex].media = emptyMedia();
+    edSave(); edRenderMediaPreview(); edRenderPreview();
+    await releaseUnusedMedia(oldIds);
   });
 
   $('#ed-qup').addEventListener('click', () => edMoveQuestion(-1));
@@ -105,14 +143,16 @@ function initEditorEvents() {
     edIndex++;
     edSave(); edRenderTabs(); edRenderQuestion();
   });
-  $('#ed-qdel').addEventListener('click', () => {
+  $('#ed-qdel').addEventListener('click', async () => {
+    const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
     if (edQuiz.questions.length === 1) {
-      edQuiz.questions[0] = blankQuestion();
+      edQuiz.questions[0] = blankQuestion('mc');
     } else {
       edQuiz.questions.splice(edIndex, 1);
       edIndex = Math.min(edIndex, edQuiz.questions.length - 1);
     }
     edSave(); edRenderTabs(); edRenderQuestion();
+    await releaseUnusedMedia(oldIds);
   });
 
   $('#ed-export').addEventListener('click', () => exportQuiz(edQuiz));

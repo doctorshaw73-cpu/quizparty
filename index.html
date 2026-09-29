@@ -79,8 +79,10 @@
             <button id="ed-qdel" class="btn sm danger" title="Delete">🗑</button>
           </div>
         </div>
-        <textarea id="ed-qtext" rows="2" placeholder="Type your question…" maxlength="200"></textarea>
         <div class="q-opts">
+          <label>Question type
+            <select id="ed-qtype"></select>
+          </label>
           <label>Time limit
             <select id="ed-qtime">
               <option value="5">5 s</option><option value="10">10 s</option>
@@ -96,9 +98,28 @@
             </select>
           </label>
         </div>
-        <div id="ed-answers"></div>
-        <button id="ed-adda" class="btn full">+ Add answer</button>
-        <p class="muted hint">Tick the checkbox on every correct answer (at least one).</p>
+        <textarea id="ed-qtext" rows="2" placeholder="Type your question…" maxlength="200"></textarea>
+        <div class="ed-media-bar">
+          <label class="btn sm">🖼️ Image<input type="file" id="ed-media-image" accept="image/*" hidden></label>
+          <label class="btn sm">🎬 Video<input type="file" id="ed-media-video" accept="video/*" hidden></label>
+          <label class="btn sm">🔊 Audio<input type="file" id="ed-media-audio" accept="audio/*" hidden></label>
+          <button type="button" id="ed-media-clear" class="btn sm ghost">Clear media</button>
+        </div>
+        <div id="ed-media-preview" class="q-media"></div>
+        <div id="ed-type-body"></div>
+      </div>
+      <div class="q-preview card">
+        <h3>Preview</h3>
+        <div class="q-preview-cols">
+          <div class="q-preview-col">
+            <h4>Host / projector</h4>
+            <div id="ed-preview-host" class="preview-host dark-bg"></div>
+          </div>
+          <div class="q-preview-col">
+            <h4>Player phone</h4>
+            <div id="ed-preview-player" class="preview-player dark-bg"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -136,18 +157,19 @@
       <span class="q-progress" id="hq-progress"></span>
       <h2 id="hq-text"></h2>
     </div>
+    <div class="q-media" id="hq-media"></div>
     <div class="q-mid">
       <div class="timer-circle" id="hq-timer"></div>
       <div class="answered-pill"><span id="hq-answered">0</span><small>answers</small></div>
       <button id="hq-skip" class="btn ghost-dark">Skip ⏭</button>
     </div>
-    <div class="answer-grid" id="hq-grid"></div>
+    <div id="hq-body"></div>
   </div>
 
   <div id="host-reveal" class="hsub">
     <div class="q-top"><h2 id="hr-text"></h2></div>
-    <div class="histo" id="hr-histo"></div>
-    <div class="answer-grid" id="hr-grid"></div>
+    <div class="q-media" id="hr-media"></div>
+    <div id="hr-body"></div>
     <div class="next-bar"><button id="hr-next" class="btn primary big">Next</button></div>
   </div>
 
@@ -196,8 +218,15 @@
       <span id="pq-progress"></span>
       <span class="p-timer" id="pq-timer"></span>
     </div>
-    <p class="p-qtext" id="pq-text"></p>
-    <div class="answer-grid player" id="pq-grid"></div>
+    <div id="pq-body"></div>
+  </div>
+
+  <div id="play-reconnecting" class="psub">
+    <div class="center-box">
+      <h2 class="on-dark">Reconnecting…</h2>
+      <p class="on-dark muted">Hang tight, your score is safe.</p>
+      <div class="spinner"></div>
+    </div>
   </div>
 
   <div id="play-answered" class="psub">
@@ -232,14 +261,21 @@
     <div class="center-box card">
       <h2>Connection lost</h2>
       <p id="pd-msg" class="muted">The host ended the game or the connection dropped.</p>
-      <button class="btn primary" onclick="location.hash=''">Home</button>
+      <button id="pd-retry" class="btn primary">Try again</button>
+      <button class="btn" onclick="location.hash=''">Home</button>
     </div>
   </div>
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
+<script src="js/transport/config.js"></script>
+<script src="js/transport/peer-legacy.js"></script>
+<script src="js/transport/ws-transport.js"></script>
+<script src="js/transport/index.js"></script>
 <script src="js/util.js"></script>
+<script src="js/media.js"></script>
+<script src="js/qtypes.js"></script>
 <script src="js/store.js"></script>
 <script src="js/editor.js"></script>
 <script src="js/host.js"></script>
