@@ -8,7 +8,14 @@ Put the host screen on a projector or TV, and everyone in the room joins on thei
 
 ## How can it work without a server?
 
-The host's browser *is* the game server. QuizParty uses **WebRTC data channels** (via [PeerJS](https://peerjs.com)): every player's phone connects directly to the host's browser, peer-to-peer. The only third-party involvement is PeerJS's free public signaling broker, which is used once per player to *establish* the connection — after that, all game traffic flows directly between the devices. No accounts, no database, no game data ever touches a server.
+The host's browser *is* the game server. Quiz content, scoring, and media never leave it.
+
+There are two ways player messages actually travel, chosen automatically by which page loaded the app (see `js/transport/`, both speak the exact same message protocol — `js/host.js`/`js/player.js`/`js/qtypes.js` don't know or care which one is active):
+
+- **Plain web app (this GitHub Pages site)**: **WebRTC data channels** via [PeerJS](https://peerjs.com) — every phone connects directly to the host's browser, peer-to-peer, over the same Wi-Fi or the open internet. PeerJS's free public broker is used once per player to *establish* the connection; after that, traffic flows directly between devices.
+- **Windows desktop app + public player page** (`player.html`): a small self-hostable Cloudflare Worker relay (`relay/`) forwards messages over `wss://`, so a phone can join from a completely different network — cellular data included — with no LAN address, no port forwarding, and no firewall prompt. The relay only ever sees the same minimal, privacy-preserving player-control messages a phone would otherwise send directly; see `relay/README.md` for exactly what it can and can't do.
+
+Either way: your quizzes live in your browser's localStorage, attached media in IndexedDB, and nothing is ever uploaded to a server.
 
 Your quizzes are stored in your browser's localStorage; attached images/audio/video are stored in your browser's IndexedDB. Quizzes can be exported/imported as JSON files, media and all.
 
@@ -38,7 +45,7 @@ Then open http://localhost:8080. Note that players on *other devices* need to re
 
 ### Self-hosting the signaling too
 
-If you don't want to rely on the free PeerJS cloud broker, run your own [PeerServer](https://github.com/peers/peerjs-server) and pass its host/port to the two `new Peer(...)` calls in `js/host.js` and `js/player.js`.
+If you don't want to rely on the free PeerJS cloud broker, run your own [PeerServer](https://github.com/peers/peerjs-server) and pass its host/port to `createHostPeerLegacy`/`createPlayerPeerLegacy` in `js/transport/peer-legacy.js`.
 
 ### Running the tests
 
@@ -46,7 +53,24 @@ If you don't want to rely on the free PeerJS cloud broker, run your own [PeerSer
 node test/run-tests.js
 ```
 
-A dependency-free Node script that exercises the real validation, normalization, scoring/correctness, and quiz-storage/migration logic (see "Architecture" below). It doesn't cover DOM rendering or PeerJS networking — those are checked by hand (two browser tabs/devices) before each release.
+A dependency-free Node script that exercises the real validation, normalization, scoring/correctness, and quiz-storage/migration logic (see "Architecture" below). It doesn't cover DOM rendering or networking — those are checked by hand (two browser tabs/devices, or the relay's own tests in `relay/test/`) before each release.
+
+## Windows desktop app
+
+A packaged Windows app (`QuizParty Setup <version>.exe`) that opens straight to the QuizParty host UI — no Python, Node, Git, or command line needed to *use* it. It's the same app code as the web version, running inside [Electron](https://www.electronjs.org/) with a minimal, locked-down preload bridge (`nodeIntegration: false`, `contextIsolation: true`, no filesystem/shell access exposed to the page) and no local HTTP server, LAN detection, or inbound port at all — the desktop app always joins games through the relay described above, so QR codes always show a public HTTPS URL, never `localhost` or a LAN address.
+
+To build it yourself:
+
+```bash
+npm install
+npm run dist:win
+```
+
+This produces `dist/QuizParty Setup <version>.exe` (an NSIS installer) via [electron-builder](https://www.electron.build/). Building a Windows target from Linux/macOS requires [Wine](https://www.winehq.org/) (`apt-get install --no-install-recommends wine64 wine32:i386` on Debian/Ubuntu, after `dpkg --add-architecture i386`); on Windows itself, no Wine is needed.
+
+The installer is unsigned (no code-signing certificate) — Windows SmartScreen will show an "unrecognized app" warning on first run. This is expected and safe to bypass (More info → Run anyway) for a personal build; it's not a defect in the app.
+
+Before your own build's QR codes point anywhere real, deploy the relay (`relay/README.md`) and fill in its URL in `desktop/preload.js` and `js/transport/config.js`, and enable GitHub Pages for `player.html` (below).
 
 ## Question types
 
@@ -104,21 +128,39 @@ A quiz with attached media additionally carries a `media` map at the top level (
 
 Importing a quiz never trusts media ids from the file directly — each embedded `data:` URL is re-saved into your browser's IndexedDB under a fresh id.
 
+## GitHub Pages (for the public player page)
+
+`player.html` needs to be reachable over plain HTTPS so a phone on cellular data can load it. If you fork this repo:
+
+1. On GitHub, open your fork → **Settings** → **Pages**.
+2. Under **Build and deployment** → **Source**, choose **Deploy from a branch**.
+3. Under **Branch**, choose your default branch and **/ (root)**, then **Save**.
+4. GitHub publishes the whole repo root, so `player.html` becomes reachable at `https://<your-username>.github.io/<your-repo>/player.html` (usually live within a minute or two).
+5. Put that exact URL into `js/transport/config.js`'s `QUIZPARTY_DEFAULT_PLAYER_URL` and into `desktop/preload.js`'s `PLAYER_URL`, then rebuild the desktop app.
+
+This step was **not** performed as part of this change (this environment has no access to your GitHub account's repository settings) — the steps above are exactly what to click.
+
 ## Architecture
 
 - `js/qtypes.js` is the single place that knows how each question type behaves — validation, scoring, host rendering, the phone control, and the editor fields — so `host.js`/`player.js`/`editor.js` stay generic dispatchers instead of growing a conditional per feature. Adding an eleventh question type means adding one entry here.
+- `js/transport/` is the one boundary that knows how a message physically gets from host to player: `config.js` picks a mode (`'peer'` — direct WebRTC, the original behavior — or `'ws'` — the Cloudflare relay), `peer-legacy.js` and `ws-transport.js` each imitate the same tiny PeerJS-shaped API (`Peer`/`DataConnection`: `.on()`, `.send()`, `.close()`, `.destroy()`), and `index.js` picks between them. Neither `host.js` nor `player.js` knows or cares which one is live.
 - `js/media.js` is the IndexedDB-backed media store, shared by the live game (`host.js`) and the editor's live preview.
 - `js/store.js` owns quiz CRUD (localStorage), validation, normalization, and import/export — including migrating quizzes created by earlier versions of QuizParty (a missing `type` defaults to multiple choice; a missing `media` block defaults to empty).
 - `js/host.js` drives the game's phases (lobby → question → reveal → scoreboard → podium) and is the sole source of truth for scoring; it never trusts a player's claim of correctness.
 - `js/player.js` is a thin connection/message dispatcher — all rendering is delegated to `js/qtypes.js`.
+- `player.html` is the public, relay-only entry point a phone actually opens — a trimmed page with none of the editor/host/library code, so it stays small and works from any static HTTPS host.
+- `relay/` is the Cloudflare Worker + Durable Object relay for the `'ws'` transport — see `relay/README.md`.
+- `desktop/` is the Electron wrapper for the Windows app — see "Windows desktop app" above.
 
 ## Known limitations
 
 - **Reconnecting mid-question**: a dropped phone auto-reconnects with its score and streak intact (matched by a persistent id in `localStorage`), but it re-joins as of the *next* question — there's no mid-question resume of remaining time or the current answer state.
-- **Very large media**: image-pin sends its target image to players over the WebRTC data channel (there's no shared server to host it on), so a very large image will be slow to reach phones on a poor connection. Keep image-pin images reasonably sized.
-- **The host tab must stay open** — closing it ends the game (there is no server to keep it alive).
-- WebRTC needs a working internet connection for connection setup; very restrictive corporate/school firewalls that block WebRTC entirely will block the game too.
+- **Very large media**: image-pin sends its target image to players (over WebRTC directly, or as one relay message in `'ws'` mode), so a very large image will be slow to reach phones on a poor connection. Keep image-pin images reasonably sized (the centralized media policy in `js/media.js` already caps this).
+- **The host must stay running** — closing it ends the game (there is no server to keep it alive).
+- A working internet connection is needed for connection setup either way (PeerJS's broker, or the relay); very restrictive corporate/school firewalls that block WebRTC or WebSockets entirely will block the game too.
 - Tested comfortably with room-sized groups (tens of players). It is not built for 1,000-player arenas.
+- The relay (`relay/`) has no mid-game host-reconnect: if the host's connection to the relay drops, connected players are told the host disconnected and the room ends — there's no resume, only rejoining a new room.
+- The Windows installer is unsigned; Windows SmartScreen will warn on first run (see "Windows desktop app" above).
 
 ## Contributing
 
