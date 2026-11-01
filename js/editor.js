@@ -56,7 +56,15 @@ function edRenderTypeBody() {
 
 function edRenderMediaPreview() {
   const q = edQuiz.questions[edIndex];
-  resolveMediaUrls(q.media).then(urls => { $('#ed-media-preview').innerHTML = mediaHtml(urls); });
+  const v = q.videoEmbed;
+  $('#ed-embed-url').value = v ? v.ref : '';
+  $('#ed-embed-start').value = v && Number.isInteger(v.start) ? v.start : '';
+  $('#ed-embed-end').value = v && Number.isInteger(v.end) ? v.end : '';
+  $('#ed-embed-hint').textContent = v && v.provider === 'youtube' ? 'YouTube — start/end trim a clip.'
+    : v && v.provider === 'facebook' ? 'Facebook video — start/end aren’t supported by Facebook’s player and are ignored.'
+    : v && v.provider === 'custom' ? 'Embedded as-is — start/end aren’t applied for an unrecognized site.'
+    : 'Paste a YouTube or Facebook video URL, or any other site’s own embeddable URL (e.g. its "Share → Embed" link).';
+  resolveMediaUrls(q.media).then(urls => { $('#ed-media-preview').innerHTML = mediaHtml(urls, q.videoEmbed); });
 }
 
 async function edRenderPreview() {
@@ -66,7 +74,7 @@ async function edRenderPreview() {
   const media = await resolveMediaUrls(q.media);
 
   const hostEl = $('#ed-preview-host');
-  hostEl.innerHTML = `<div class="q-media">${mediaHtml(media)}</div><h4>${esc(q.text || '(question text)')}</h4><div class="preview-body"></div>`;
+  hostEl.innerHTML = `<div class="q-media">${mediaHtml(media, q.videoEmbed)}</div><h4>${esc(q.text || '(question text)')}</h4><div class="preview-body"></div>`;
   type.hostRender(hostEl.querySelector('.preview-body'), q, media);
 
   const ctx = type.sendsMediaToPlayer && q.media.image ? { imageDataUrl: await mediaToDataUrl(q.media.image) } : {};
@@ -131,9 +139,24 @@ function initEditorEvents() {
   $('#ed-media-clear').addEventListener('click', async () => {
     const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
     edQuiz.questions[edIndex].media = emptyMedia();
+    edQuiz.questions[edIndex].videoEmbed = null;
     edSave(); edRenderMediaPreview(); edRenderPreview();
     await releaseUnusedMedia(oldIds);
   });
+  const edUpdateVideoEmbed = () => {
+    const url = $('#ed-embed-url').value;
+    const q = edQuiz.questions[edIndex];
+    if (!url.trim()) { q.videoEmbed = null; edSave(); edRenderMediaPreview(); edRenderPreview(); return; }
+    const parsed = parseVideoEmbed(url);
+    if (!parsed) { alert("That doesn't look like a YouTube/Facebook video URL or a valid https embeddable URL."); return; }
+    const start = $('#ed-embed-start').value === '' ? null : Math.max(0, Math.round(+$('#ed-embed-start').value));
+    const end = $('#ed-embed-end').value === '' ? null : Math.max(0, Math.round(+$('#ed-embed-end').value));
+    q.videoEmbed = sanitizeVideoEmbed({ ...parsed, start, end });
+    edSave(); edRenderMediaPreview(); edRenderPreview();
+  };
+  $('#ed-embed-url').addEventListener('change', edUpdateVideoEmbed);
+  $('#ed-embed-start').addEventListener('change', edUpdateVideoEmbed);
+  $('#ed-embed-end').addEventListener('change', edUpdateVideoEmbed);
 
   $('#ed-qup').addEventListener('click', () => edMoveQuestion(-1));
   $('#ed-qdown').addEventListener('click', () => edMoveQuestion(1));

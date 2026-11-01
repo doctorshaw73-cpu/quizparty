@@ -198,10 +198,18 @@ async function resolveMediaUrls(media) {
   return out;
 }
 
-function mediaHtml(urls) {
+/* videoEmbed is host-only, exactly like the rest of this function's
+   output — never sent to a player (see js/qtypes.js's header comment).
+   buildEmbedSrc() (js/util.js) is the one place that turns it into an
+   actual <iframe src>, re-validating from scratch rather than trusting
+   that js/store.js's sanitizeQuestion or the editor's own input already
+   did — see that function's own comment for why. */
+function mediaHtml(urls, videoEmbed) {
   const parts = [];
   if (urls.imageUrl) parts.push(`<img src="${urls.imageUrl}" class="q-media-img" alt="">`);
   if (urls.videoUrl) parts.push(`<video src="${urls.videoUrl}" class="q-media-vid" controls></video>`);
   if (urls.audioUrl) parts.push(`<audio src="${urls.audioUrl}" class="q-media-aud" controls></audio>`);
+  const embedSrc = buildEmbedSrc(videoEmbed);
+  if (embedSrc) parts.push(`<iframe class="q-media-embed" src="${embedSrc}" title="Embedded video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`);
   return parts.join('');
 }

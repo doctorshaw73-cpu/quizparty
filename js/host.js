@@ -216,8 +216,8 @@ class HostGame {
     return { imageDataUrl };
   }
 
-  renderHostMedia(elId, media) {
-    $('#' + elId).innerHTML = mediaHtml(media);
+  renderHostMedia(elId, media, videoEmbed) {
+    $('#' + elId).innerHTML = mediaHtml(media, videoEmbed);
   }
 
   /* ---------- lobby ---------- */
@@ -305,7 +305,7 @@ class HostGame {
     showSub('view-host', 'host-question');
     $('#hq-progress').textContent = `Question ${i + 1} of ${this.quiz.questions.length}`;
     $('#hq-text').textContent = q.text;
-    this.renderHostMedia('hq-media', hostMedia);
+    this.renderHostMedia('hq-media', hostMedia, q.videoEmbed);
     $('#hq-answered').textContent = '0';
     type.hostRender($('#hq-body'), q, hostMedia);
     $('#hq-skip').onclick = () => this.endQuestion();
@@ -373,7 +373,7 @@ class HostGame {
     $('#hr-text').textContent = q.text;
     const media = await resolveMediaUrls(q.media);
     if (this.destroyed || this.qIndex !== qIndexAtCall) return;
-    this.renderHostMedia('hr-media', media);
+    this.renderHostMedia('hr-media', media, q.videoEmbed);
     type.hostReveal($('#hr-body'), q, [...this.players.values()], media);
     showSub('view-host', 'host-reveal');
 

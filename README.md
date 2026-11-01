@@ -93,6 +93,16 @@ Every question type follows the same rule: **the host screen always shows everyt
 
 Attach an image, video, or audio clip to any question from the editor. Media is stored as a Blob in your browser's IndexedDB (not localStorage, which is too small) and rendered on the host/projector screen only. It's never uploaded anywhere and never sent to players — the sole exception is image-pin questions, where the target image is sent to the phone because the question can't be answered without it.
 
+## Embedded video
+
+Besides attaching your own video file, a question can embed a video from an external site instead — paste its URL into the editor's video-embed field (`js/util.js`'s `parseVideoEmbed`/`buildEmbedSrc`). Nothing is downloaded or stored locally; it's a live `<iframe>` on the host screen only, exactly like every other media attachment (never sent to players).
+
+- **YouTube** — reliable, documented support, including trimming to just a clip (start/end seconds), via YouTube's own privacy-enhanced `youtube-nocookie.com` embed domain.
+- **Facebook** — via Facebook's own official [Video Plugin](https://developers.facebook.com/docs/plugins/embedded-video-player) iframe. Facebook has no documented way to trim a clip via URL parameters, so start/end are ignored for it — the editor says so.
+- **Anything else** (Yandex, Vimeo, or any other site) — there's no reliable, standardized way to auto-detect or trim a clip for an arbitrary platform without being confident its embed format is stable and documented, so this is a deliberate generic fallback: paste that site's own real embeddable URL (typically from its "Share → Embed" feature) and it's used as-is, start/end ignored.
+
+This app does not record, rip, or capture video from any site (e.g. screen-recording a YouTube video) — almost all online video is copyrighted by its uploader whether or not it has DRM, and a feature built to copy it without permission would be a copyright-infringement tool regardless of the technique. Embedding (what's described above) is different: nothing is copied, the video streams live from the original platform at show-time, exactly like clicking that platform's own "Share → Embed" button.
+
 ## Quiz JSON format
 
 A plain quiz (no media) exports exactly as before, plus a `type` field per question:
@@ -125,6 +135,14 @@ A quiz with attached media additionally carries a `media` map at the top level (
   "media": { "abc123": "data:image/png;base64,..." }
 }
 ```
+
+A question may also carry an optional `videoEmbed` for an externally-hosted video (see "Embedded video" above) instead of/alongside local media:
+
+```json
+{ "type": "mc", "...": "...", "videoEmbed": { "provider": "youtube", "ref": "dQw4w9WgXcQ", "start": 30, "end": 90 } }
+```
+
+`provider` is `"youtube"`, `"facebook"`, or `"custom"` (anything else); `ref` is the video id (youtube) or the full URL (facebook/custom); `start`/`end` are clip-trim seconds, only honored for `"youtube"`. A plain string also works in place of the object — `"videoEmbed": "https://youtu.be/dQw4w9WgXcQ"` — the app detects the provider itself.
 
 Importing a quiz never trusts media ids from the file directly — each embedded `data:` URL is re-saved into your browser's IndexedDB under a fresh id.
 

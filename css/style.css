@@ -306,6 +306,7 @@ button, input, select, textarea { font: inherit; }
 .q-media-img { max-width: 100%; max-height: 32vh; border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.3); }
 .q-media-vid { max-width: 100%; max-height: 40vh; border-radius: 8px; }
 .q-media-aud { width: 100%; max-width: 480px; }
+.q-media-embed { width: 100%; max-width: 640px; aspect-ratio: 16 / 9; height: auto; border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.3); }
 
 /* ---------- order / puzzle (host list + tile-list reveal) ---------- */
 .tile-list { display: flex; flex-direction: column; gap: .5rem; max-width: 500px; margin: 0 auto; width: 100%; padding: 0 1rem; }
@@ -353,6 +354,9 @@ button, input, select, textarea { font: inherit; }
 /* ---------- editor: media bar + type-select + preview ---------- */
 .ed-media-bar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .ed-media-bar label.btn { cursor: pointer; }
+.ed-embed-url-input { flex: 1; min-width: 0; padding: .5rem .7rem; border-radius: 6px; border: 1px solid #ccc; }
+.ed-embed-clip { display: flex; align-items: center; gap: .3rem; font-size: .85rem; }
+.ed-embed-clip input { width: 4.5rem; padding: .3rem .4rem; border-radius: 6px; border: 1px solid #ccc; }
 .q-tab-icon { margin-right: .3rem; }
 .q-preview { margin-top: 1rem; }
 .q-preview h3 { margin-bottom: .8rem; }

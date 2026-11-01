@@ -29,6 +29,7 @@ function migrateQuiz(quiz) {
   quiz.questions.forEach(q => {
     if (!q.type || !QuestionTypes[q.type]) q.type = 'mc';
     if (!q.media) q.media = emptyMedia();
+    if (q.videoEmbed === undefined) q.videoEmbed = null;
   });
   return quiz;
 }
@@ -64,7 +65,7 @@ function deleteQuiz(id) {
 
 function blankQuestion(type) {
   const t = QuestionTypes[type] ? type : 'mc';
-  return { type: t, text: '', media: emptyMedia(), time: 20, points: 'standard', ...QuestionTypes[t].defaults() };
+  return { type: t, text: '', media: emptyMedia(), videoEmbed: null, time: 20, points: 'standard', ...QuestionTypes[t].defaults() };
 }
 
 /* Switches a question to a different type, keeping the fields common to every
@@ -72,7 +73,7 @@ function blankQuestion(type) {
    the new type anyway). */
 function retypeQuestion(q, newType) {
   const t = QuestionTypes[newType] ? newType : 'mc';
-  return { type: t, text: q.text, media: q.media, time: q.time, points: q.points, ...QuestionTypes[t].defaults() };
+  return { type: t, text: q.text, media: q.media, videoEmbed: q.videoEmbed, time: q.time, points: q.points, ...QuestionTypes[t].defaults() };
 }
 
 function newQuiz() {
@@ -170,6 +171,7 @@ function sanitizeQuestion(raw) {
     time: [5, 10, 20, 30, 60, 90].includes(+(raw && raw.time)) ? +raw.time : 20,
     points: ['standard', 'double', 'none'].includes(raw && raw.points) ? raw.points : 'standard',
     media: emptyMedia(),
+    videoEmbed: sanitizeVideoEmbed(raw && raw.videoEmbed),
     ...QuestionTypes[type].sanitize(raw),
   };
 }

@@ -42,6 +42,10 @@ EVERY QUESTION HAS THESE COMMON FIELDS
   "media":  { "image": null, "video": null, "audio": null }
             — leave all three null unless you are embedding real media
             (see MEDIA section). Do not invent fake ids or URLs here.
+  "videoEmbed": null, or an object/string embedding an external video
+            (YouTube, Facebook, or any other site) — see VIDEO EMBED
+            section below. This one you CAN generate confidently without
+            any binary data, since it's just a URL.
 
   ... plus the type-specific fields listed below, one block per type.
 }
@@ -112,25 +116,79 @@ THE 10 QUESTION TYPES — EXACT FIELDS FOR EACH
     editor afterward (QuizParty will refuse to host the quiz otherwise).
 
 =========================================================
-MEDIA (images / video / audio) — READ THIS CAREFULLY
+VIDEO EMBED (YouTube / Facebook / any other site) — THE EASY ONE
 =========================================================
 
-QuizParty quizzes CAN carry embedded images, video, and audio, but an AI
-text model cannot generate real image/video/audio binary data — you
-cannot invent one. There are two honest ways to handle media:
+If the human gives you a video URL (or a well-known video you can
+confidently name a real, correct URL for), you CAN generate this field
+directly — it's just a URL/small object, no binary data involved at all.
+This is different from the MEDIA section below (images/audio/your-own
+video files), which really does need real file bytes you can't invent.
 
-OPTION A (recommended, and the default unless told otherwise):
+  "videoEmbed": { "provider": "youtube", "ref": "dQw4w9WgXcQ", "start": 30, "end": 90 }
+
+  "provider": "youtube" | "facebook" | "custom"
+    - "youtube": "ref" is the 11-character video id (from a URL like
+      youtube.com/watch?v=<id> or youtu.be/<id>). "start"/"end" (seconds,
+      integers, optional) trim it to just a clip — reliable, documented
+      YouTube behavior.
+    - "facebook": "ref" is the full Facebook video page URL. Facebook has
+      no documented way to trim a clip, so don't bother setting
+      start/end for it — they're ignored.
+    - "custom": "ref" is the real embeddable URL for ANY other site
+      (Vimeo, Yandex, etc.) — typically what that site's own
+      "Share -> Embed" feature gives you. Only use this if you (or the
+      human) actually have that real URL; never invent one. start/end are
+      ignored (no standardized way to trim an arbitrary unknown
+      platform's embed).
+
+  A plain string also works in place of the object (the app detects the
+  provider itself) — simplest when you don't need clip trimming:
+    "videoEmbed": "https://youtu.be/dQw4w9WgXcQ"
+
+  Leave "videoEmbed": null (or omit it) when there's no video to embed.
+
+  IMPORTANT — this is an EMBED, not a download: the video streams live
+  from YouTube/Facebook/whatever site at show-time, nothing is copied or
+  stored. Never invent/guess a video URL as if it definitely exists and
+  is the right one — if you're not confident a specific real video exists
+  at that URL, say so to the human instead of fabricating one.
+
+=========================================================
+MEDIA (images / your-own video files / audio) — READ THIS CAREFULLY
+=========================================================
+
+QuizParty quizzes can also carry embedded images, your own video files,
+and audio (as opposed to the VIDEO EMBED above, which links to a video
+hosted elsewhere). Whether an AI can supply real bytes for these depends
+entirely on what kind of AI you're talking to:
+  - A plain text/chat model (ChatGPT, Claude, etc. in normal chat) cannot
+    generate real image/video/audio binary data in its reply — it can
+    only produce text, so it cannot invent a real file here.
+  - A generation tool that actually produces files — an image model via
+    ComfyUI/Stable Diffusion, an audio-generation model, etc. — CAN
+    produce a real file. That's a genuinely different capability from a
+    text chat reply.
+Either way, there are two honest ways to actually get that media into a
+quiz:
+
+OPTION A (recommended default — use this whether or not real media exists
+yet, including media a generation tool like ComfyUI made):
 Leave every question's "media" as { "image": null, "video": null,
 "audio": null }, generate the quiz text/questions only, and tell the
-human which question(s) they should manually attach media to afterward
-and what kind of image/video/audio would fit well. They attach it inside
-the QuizParty editor itself (an "Image" / "Video" / "Audio" button per
-question, which opens a normal file picker) — no JSON editing needed on
-their end.
+human which question(s) they should attach media to afterward and what
+kind of image/video/audio would fit well. They (or you, working through
+ComfyUI or similar separately) produce the actual file, then it gets
+attached inside the QuizParty editor itself (an "Image" / "Video" /
+"Audio" button per question, a normal file picker) — no JSON editing
+needed. This is the realistic path for anything but a tiny file: even a
+real AI-generated image easily becomes multiple megabytes of base64 text,
+which is impractical to paste through a chat interface's input limits.
 
-OPTION B (only if the human supplies you with an actual small file's
-base64 data, e.g. "here is my logo, base64: iVBORw0KG..."): you may embed
-it directly. If you do, the quiz needs a top-level "media" map alongside
+OPTION B (only for a SMALL file, and only once you actually have its real
+bytes as base64 — e.g. the human pasted "here is my logo, base64:
+iVBORw0KG..." or an image-generation tool's own output): you may embed it
+directly. If you do, the quiz needs a top-level "media" map alongside
 "questions", and each question's media field points at a key in it:
 
   {
@@ -163,8 +221,11 @@ it directly. If you do, the quiz needs a top-level "media" map alongside
     independently be null or a media-map id — a question can have all
     three, just one, or none.
 
-In practice: for almost every request, use Option A. Only use Option B if
-the human has explicitly pasted you real file data to embed.
+In practice: for almost every request, use Option A, and use VIDEO EMBED
+above (not this MEDIA section at all) whenever a video from YouTube,
+Facebook, or elsewhere is what's actually wanted — it needs no file data
+and no size limits apply. Only use Option B here if you have real, small
+file bytes in hand.
 
 =========================================================
 A COMPLETE, VALID EXAMPLE (study this shape closely)
@@ -256,12 +317,27 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
       "time": 60,
       "points": "none",
       "media": { "image": null, "video": null, "audio": null }
+    },
+    {
+      "type": "mc",
+      "text": "Watch the clip, then answer: which landmark is shown?",
+      "time": 30,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "videoEmbed": { "provider": "youtube", "ref": "dQw4w9WgXcQ", "start": 10, "end": 25 },
+      "answers": [
+        { "text": "Eiffel Tower", "correct": true },
+        { "text": "Big Ben", "correct": false },
+        { "text": "Colosseum", "correct": false }
+      ]
     }
   ]
 }
 
 (No "imagepin" question is included here since it needs a real image —
-see the MEDIA section above.)
+see the MEDIA section above. The last question shows a "videoEmbed" —
+note this is unrelated to "media": a video file would go in
+"media.video", an embedded external video goes in "videoEmbed".)
 
 =========================================================
 HOW TO USE THE AI'S OUTPUT

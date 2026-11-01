@@ -105,6 +105,14 @@
           <label class="btn sm">🔊 Audio<input type="file" id="ed-media-audio" accept="audio/*" hidden></label>
           <button type="button" id="ed-media-clear" class="btn sm ghost">Clear media</button>
         </div>
+        <div class="ed-media-bar">
+          <input type="text" id="ed-embed-url" class="ed-embed-url-input" placeholder="Embed a video: paste a YouTube or Facebook URL, or any other site's own embed link…">
+        </div>
+        <div class="ed-media-bar">
+          <label class="ed-embed-clip">Start <input type="number" id="ed-embed-start" min="0" step="1" placeholder="s"></label>
+          <label class="ed-embed-clip">End <input type="number" id="ed-embed-end" min="0" step="1" placeholder="s"></label>
+          <small id="ed-embed-hint" class="muted"></small>
+        </div>
         <div id="ed-media-preview" class="q-media"></div>
         <div id="ed-type-body"></div>
       </div>

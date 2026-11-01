@@ -35,6 +35,7 @@ function makeLocalStorage() {
    override them on `.ctx` after loading — see loadSandbox(). */
 const EXPORTED_NAMES = [
   'QuestionTypes', 'QUESTION_TYPE_LIST', 'questionTypeOf', 'MAX_TILES', 'SHAPES', 'esc', 'clamp', 'uid',
+  'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc',
   'safeText', 'safeBool', 'safeNumber', 'safeRows',
   'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'TYPED_MAX_ACCEPTED',
   'validateQuiz', 'normalizeQuiz', 'blankQuestion', 'retypeQuestion', 'migrateQuiz', 'sanitizeQuestion',
@@ -53,7 +54,7 @@ const EXPORTED_NAMES = [
    identifier lookups inside the loaded scripts resolve through this same
    object for anything declared with `function`/`var`. */
 function loadSandbox() {
-  const sandbox = { console, alert() {} };
+  const sandbox = { console, alert() {}, URL };
   sandbox.localStorage = makeLocalStorage();
   vm.createContext(sandbox);
   for (const f of ['js/util.js', 'js/media.js', 'js/qtypes.js', 'js/store.js']) {
@@ -91,7 +92,7 @@ const GAME_EXPORTED_NAMES = [...EXPORTED_NAMES, 'HostGame', 'startHost'];
    object with connectionId/open/send()/close() satisfies everything
    HostGame.handleJoin()/broadcast() actually do with a `conn`. */
 function loadGameSandbox() {
-  const sandbox = { console, setInterval, clearInterval, setTimeout, clearTimeout };
+  const sandbox = { console, setInterval, clearInterval, setTimeout, clearTimeout, URL };
   sandbox.localStorage = makeLocalStorage();
   sandbox.document = { querySelectorAll: () => [], querySelector: () => makeFakeEl() };
   sandbox.window = { scrollTo() {} };
@@ -1086,6 +1087,126 @@ test('preload/ready: a disconnect during the wait is dropped from pending, not l
   await p;
   game.destroy();
   assert.ok(Number.isFinite(game.qStartedAt), 'should proceed once the only remaining eligible player acks');
+}, { loader: loadGameSandbox });
+
+/* ---------- embedded video (host-only illustrative media) ---------- */
+
+test('extractYoutubeId: accepts a bare id and common URL shapes, rejects everything else', ({ extractYoutubeId }) => {
+  const id = 'dQw4w9WgXcQ';
+  assert.strictEqual(extractYoutubeId(id), id);
+  assert.strictEqual(extractYoutubeId(`https://www.youtube.com/watch?v=${id}`), id);
+  assert.strictEqual(extractYoutubeId(`https://www.youtube.com/watch?v=${id}&t=30s`), id);
+  assert.strictEqual(extractYoutubeId(`https://youtu.be/${id}`), id);
+  assert.strictEqual(extractYoutubeId(`https://www.youtube.com/embed/${id}`), id);
+  assert.strictEqual(extractYoutubeId(`https://www.youtube.com/shorts/${id}`), id);
+  assert.strictEqual(extractYoutubeId(''), null);
+  assert.strictEqual(extractYoutubeId('not a url'), null);
+  assert.strictEqual(extractYoutubeId('"><script>alert(1)</script>'), null);
+  assert.strictEqual(extractYoutubeId(null), null);
+  assert.strictEqual(extractYoutubeId(undefined), null);
+  assert.strictEqual(extractYoutubeId(12345), null);
+  assert.strictEqual(extractYoutubeId({ toString: () => id }), null);  // never coerced, only real strings
+});
+
+test('parseVideoEmbed: detects youtube, facebook, and falls back to any other https URL as "custom"', ({ parseVideoEmbed }) => {
+  const yt = parseVideoEmbed('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  jsonEqual(yt, { provider: 'youtube', ref: 'dQw4w9WgXcQ' });
+
+  const fb = parseVideoEmbed('https://www.facebook.com/someone/videos/123456789/');
+  jsonEqual(fb, { provider: 'facebook', ref: 'https://www.facebook.com/someone/videos/123456789/' });
+
+  // Yandex has no documented, reliable embed-by-id scheme the way YouTube
+  // does, so it (and anything else) is treated generically: the user
+  // supplies the platform's own real embeddable URL, used as-is.
+  const yandex = parseVideoEmbed('https://frontend.vh.yandex.ru/player/abc123');
+  jsonEqual(yandex, { provider: 'custom', ref: 'https://frontend.vh.yandex.ru/player/abc123' });
+
+  assert.strictEqual(parseVideoEmbed('http://insecure.example.com/embed/1'), null, 'non-https is rejected outright');
+  assert.strictEqual(parseVideoEmbed('javascript:alert(1)'), null);
+  assert.strictEqual(parseVideoEmbed(''), null);
+  assert.strictEqual(parseVideoEmbed(null), null);
+});
+
+test('sanitizeVideoEmbed: round-trips a good value, re-detects the provider rather than trusting a claimed one, sanitizes start/end', ({ sanitizeVideoEmbed }) => {
+  const good = sanitizeVideoEmbed({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 30, end: 90 });
+  jsonEqual(good, { provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 30, end: 90 });
+
+  // claims to be custom, but the ref is actually a real YouTube URL —
+  // re-detection wins, not the claimed provider
+  const spoofedProvider = sanitizeVideoEmbed({ provider: 'custom', ref: 'https://youtu.be/dQw4w9WgXcQ' });
+  assert.strictEqual(spoofedProvider.provider, 'youtube');
+
+  const badRange = sanitizeVideoEmbed({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 90, end: 30 });
+  assert.strictEqual(badRange.end, null, 'end <= start is nonsensical and dropped rather than guessed at');
+
+  const fromPlainString = sanitizeVideoEmbed('https://youtu.be/dQw4w9WgXcQ');
+  assert.strictEqual(fromPlainString.provider, 'youtube', 'a hand-written/AI-generated quiz can just supply a bare string');
+
+  assert.strictEqual(sanitizeVideoEmbed('"><script>bad</script>'), null);
+  assert.strictEqual(sanitizeVideoEmbed(null), null);
+  assert.strictEqual(sanitizeVideoEmbed({}), null);
+});
+
+test('sanitizeQuestion: keeps a valid videoEmbed, rejects a bad one on import', ({ sanitizeQuestion }) => {
+  const good = sanitizeQuestion({ type: 'mc', videoEmbed: { provider: 'youtube', ref: 'dQw4w9WgXcQ' }, answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] });
+  assert.strictEqual(good.videoEmbed.ref, 'dQw4w9WgXcQ');
+  const bad = sanitizeQuestion({ type: 'mc', videoEmbed: { provider: 'youtube', ref: '"><script>bad</script>' }, answers: [] });
+  assert.strictEqual(bad.videoEmbed, null);
+  const missing = sanitizeQuestion({ type: 'mc', answers: [] });
+  assert.strictEqual(missing.videoEmbed, null);
+});
+
+test('migrateQuiz: backfills videoEmbed on a quiz saved before this feature existed', ({ migrateQuiz }) => {
+  const quiz = { title: 'T', questions: [{ type: 'mc', text: 'Q', media: { image: null, video: null, audio: null }, answers: [] }] };
+  migrateQuiz(quiz);
+  assert.strictEqual(quiz.questions[0].videoEmbed, null);
+});
+
+test('buildEmbedSrc: youtube includes start/end params, facebook uses the official plugin URL, custom passes through, bad input yields nothing', ({ buildEmbedSrc }) => {
+  const yt = buildEmbedSrc({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 30, end: 90 });
+  assert.ok(yt.startsWith('https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'));
+  assert.ok(yt.includes('start=30') && yt.includes('end=90'));
+
+  const fb = buildEmbedSrc({ provider: 'facebook', ref: 'https://www.facebook.com/x/videos/1/' });
+  assert.ok(fb.startsWith('https://www.facebook.com/plugins/video.php?href='));
+
+  const custom = buildEmbedSrc({ provider: 'custom', ref: 'https://frontend.vh.yandex.ru/player/abc123' });
+  assert.strictEqual(custom, 'https://frontend.vh.yandex.ru/player/abc123');
+
+  assert.strictEqual(buildEmbedSrc(null), null);
+  assert.strictEqual(buildEmbedSrc({ provider: 'youtube', ref: 'not-an-id' }), null);
+  // a claimed provider that doesn't match what the ref actually re-detects
+  // as must never be trusted into building that provider's URL shape
+  assert.strictEqual(buildEmbedSrc({ provider: 'facebook', ref: 'https://youtu.be/dQw4w9WgXcQ' }), null);
+});
+
+test('mediaHtml: embeds a valid videoEmbed as an iframe, re-validating rather than trusting the caller', ({ ctx }) => {
+  const safe = ctx.mediaHtml({}, { provider: 'youtube', ref: 'dQw4w9WgXcQ', start: null, end: null });
+  assert.ok(safe.includes('https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ'));
+  const hostile = ctx.mediaHtml({}, { provider: 'youtube', ref: '"><script>alert(1)</script>' });
+  assert.ok(!hostile.includes('<script>'), 'a value that fails re-validation must never reach the iframe src');
+  assert.strictEqual(ctx.mediaHtml({}, null), '', 'no videoEmbed -> no iframe at all');
+});
+
+test('privacy: a question\'s videoEmbed never reaches the broadcast "q" message players receive', async (sb) => {
+  const quiz = {
+    title: 'T',
+    questions: [{
+      type: 'mc', text: 'Q', media: sb.emptyMedia(), videoEmbed: { provider: 'youtube', ref: 'dQw4w9WgXcQ', start: null, end: null },
+      time: 20, points: 'standard', answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }],
+    }],
+  };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  const conn = fakeConn('c1');
+  let sent = null;
+  conn.send = msg => { if (msg.t === 'q') sent = msg; };
+  game.players.set('c1', mkPlayer(conn));
+  await game.startQuestion(0);
+  game.destroy();
+  assert.ok(sent, 'the player should have received a q message');
+  assert.ok(!JSON.stringify(sent).includes('videoEmbed'), 'videoEmbed must never appear anywhere in what the player receives');
+  assert.ok(!JSON.stringify(sent).includes('dQw4w9WgXcQ'), 'the actual video id/url must never reach the player');
 }, { loader: loadGameSandbox });
 
 /* ---------- runner ---------- */
