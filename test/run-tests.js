@@ -324,6 +324,31 @@ test('scramble/guesssong/guesssound: isCorrect and sanitizeSubmission behave exa
   }
 });
 
+test('blur/zoom/silhouette/puzzlereveal: isCorrect and sanitizeSubmission behave exactly like typed (shared implementation)', ({ QuestionTypes }) => {
+  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
+    const q = { accepted: ['Elephant'] };
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'elephant' }), true, `${type} should match case-insensitively`);
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'giraffe' }), false);
+    jsonEqual(QuestionTypes[type].sanitizeSubmission(q, { text: '  Elephant  ' }), { text: 'Elephant' });
+    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { text: 123 }), null);
+  }
+});
+
+test('blur/zoom/silhouette/puzzlereveal: validate() requires an attached image, same precedent as image-pin', ({ QuestionTypes }) => {
+  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
+    const noImage = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: null } });
+    assert.ok(noImage.some(p => /image/i.test(p)), `${type} without an image should be flagged`);
+    const withImage = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: 'abc123', video: null, audio: null } });
+    assert.strictEqual(withImage.length, 0, `${type} with an image and an accepted answer should validate cleanly`);
+  }
+});
+
+test('blur/zoom/silhouette/puzzlereveal player payloads carry no accepted-answer data', ({ QuestionTypes }) => {
+  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
+    jsonEqual(QuestionTypes[type].playerPayload({ accepted: ['elephant'] }, {}), {});
+  }
+});
+
 test('imagepin payload carries the image (the one documented exception)', ({ QuestionTypes }) => {
   const payload = QuestionTypes.imagepin.playerPayload({ tolerance: 0.1 }, { imageDataUrl: 'data:image/png;base64,AAA' });
   assert.strictEqual(payload.image, 'data:image/png;base64,AAA');
@@ -412,10 +437,10 @@ test('getQuizzes seeds a sample quiz on first run, upsert/delete round-trip', (s
   assert.strictEqual(sb.getQuiz(quiz.id), null);
 });
 
-test('QUESTION_TYPE_LIST covers all thirteen required question types', (sb) => {
+test('QUESTION_TYPE_LIST covers all seventeen required question types', (sb) => {
   const expected = [
     'mc', 'tf', 'order', 'typed', 'slider', 'poll', 'scale', 'wordcloud', 'open', 'imagepin',
-    'scramble', 'guesssong', 'guesssound',
+    'scramble', 'guesssong', 'guesssound', 'blur', 'zoom', 'silhouette', 'puzzlereveal',
   ];
   assert.deepStrictEqual([...sb.QUESTION_TYPE_LIST].sort(), [...expected].sort());
 });

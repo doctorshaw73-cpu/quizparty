@@ -23,7 +23,7 @@ Your quizzes are stored in your browser's localStorage; attached images/audio/vi
 
 - 🎨 Kahoot-style gameplay: colored shape answer controls, countdown timer, speed-based scoring (500–1000 pts), streak bonuses, scoreboard between questions, podium at the end
 - 📵 **Player-privacy by design**: for multiple-choice, true/false, order, poll and scale questions, phones never receive the question or answer text — only shape/color tiles matched to what's shown on the shared screen. The host/projector screen always shows the full question, media, and answer text.
-- 🧩 **Thirteen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, slider/numeric, poll, scale, word cloud, open-ended, and image pin (drop-a-pin on an image)
+- 🧩 **Seventeen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, blurred picture, zoomed-in picture, silhouette reveal, puzzle piece reveal, slider/numeric, poll, scale, word cloud, open-ended, and image pin (drop-a-pin on an image)
 - 🖼️ **Local media**: attach an image, video, or audio clip to any question. Media lives in your browser's IndexedDB and is shown on the host screen only — never sent to players, except image-pin's target image, which a phone genuinely needs to answer
 - 🎬 PowerPoint/Slides-style editor: a slide-sorter sidebar with per-type icons, a type picker, time limit and point multiplier per question, and a live host+phone preview of exactly what each screen will show
 - 📱 Players join with a PIN or QR code — nothing to install
@@ -85,6 +85,10 @@ Every question type follows the same rule: **the host screen always shows everyt
 | Word scramble | A text box | Same matching as typed answer; the host screen shows the accepted answer's letters shuffled (word boundaries kept) |
 | Guess the song | A text box | Host plays an attached audio clip (optionally auto-trimmed to a set length); same matching as typed answer; requires an attached audio clip |
 | Guess the sound | A text box | Identical mechanic to guess the song, for a sound effect instead of a song |
+| Blurred picture | A text box | Host screen shows the attached image starting heavily blurred, smoothly sharpening to fully clear over the question's time limit; same matching as typed answer; requires an attached image |
+| Zoomed-in picture | A text box | Identical mechanic to blurred picture; the host screen instead starts zoomed into an extreme close-up and zooms back out to the full image |
+| Silhouette reveal | A text box | Identical mechanic to blurred picture; the host screen instead starts as a solid black silhouette and fades up to full color |
+| Puzzle piece reveal | A text box | Identical mechanic to blurred picture; the host screen instead covers the image with tiles that disappear one at a time in random order, timed to finish as the clock runs out |
 | Slider / numeric | A range slider (min/max only, no correct value) | Scored within a small tolerance |
 | Poll | Colored shape tiles, no text | Ungraded — just shows the distribution |
 | Scale | Numbered tiles (e.g. 1–5) | Ungraded rating/Likert-style question |
@@ -166,7 +170,7 @@ This step was **not** performed as part of this change (this environment has no 
 
 ## Architecture
 
-- `js/qtypes.js` is the single place that knows how each question type behaves — validation, scoring, host rendering, the phone control, and the editor fields — so `host.js`/`player.js`/`editor.js` stay generic dispatchers instead of growing a conditional per feature. Adding an eleventh question type means adding one entry here.
+- `js/qtypes.js` is the single place that knows how each question type behaves — validation, scoring, host rendering, the phone control, and the editor fields — so `host.js`/`player.js`/`editor.js` stay generic dispatchers instead of growing a conditional per feature. Adding another question type means adding one entry here.
 - `js/transport/` is the one boundary that knows how a message physically gets from host to player: `config.js` picks a mode (`'peer'` — direct WebRTC, the original behavior — or `'ws'` — the Cloudflare relay), `peer-legacy.js` and `ws-transport.js` each imitate the same tiny PeerJS-shaped API (`Peer`/`DataConnection`: `.on()`, `.send()`, `.close()`, `.destroy()`), and `index.js` picks between them. Neither `host.js` nor `player.js` knows or cares which one is live.
 - `js/media.js` is the IndexedDB-backed media store, shared by the live game (`host.js`) and the editor's live preview.
 - `js/store.js` owns quiz CRUD (localStorage), validation, normalization, and import/export — including migrating quizzes created by earlier versions of QuizParty (a missing `type` defaults to multiple choice; a missing `media` block defaults to empty).

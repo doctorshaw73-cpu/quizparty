@@ -330,6 +330,15 @@ button, input, select, textarea { font: inherit; }
 }
 .scramble-space { width: 1.2rem; flex: none; }
 
+/* ---------- progressive image reveal (blur / zoom / silhouette / puzzle) ---------- */
+.reveal-wrap {
+  position: relative; max-width: 520px; margin: 0 auto; overflow: hidden;
+  border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.3); line-height: 0;
+}
+.reveal-img { display: block; width: 100%; height: auto; }
+.puzzle-grid { position: absolute; inset: 0; display: grid; }
+.puzzle-tile { background: #1a1a2e; border: 1px solid rgba(255,255,255,.06); }
+
 /* ---------- typed / slider / word cloud / open-ended player controls ---------- */
 .input-control { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 1rem; padding: 1.5rem; }
 .input-control input[type=text], .input-control textarea {

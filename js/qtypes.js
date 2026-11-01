@@ -220,6 +220,66 @@ function makeAudioGuessType(label, icon, prompt) {
   };
 }
 
+/* ---------- shared "progressive image reveal" behavior ----------
+   Puzzle Piece Reveal, Blurred Picture, Zoomed-In Picture, and Silhouette
+   Reveal are all the same mechanic underneath: an attached image,
+   obscured, that becomes clear over the course of the question's own
+   timer (q.time) — players type a guess the same way as typed/scramble,
+   matched against an accepted list. Only what's visually applied to the
+   image differs (a CSS filter/transform transition for the three
+   filter-based ones, a tile grid for the puzzle one — see puzzlereveal's
+   own entry below, which doesn't fit this factory).
+
+   These require hiding the generic host-only media area (#hq-media) for
+   the live question: that pipeline (js/media.js resolveMediaUrls/
+   mediaHtml, driven generically for every type from js/host.js) would
+   otherwise show the SAME image fully clear right next to the obscured
+   one, defeating the entire point. It's deliberately left alone again for
+   the reveal phase (#hr-media), where showing the real, clear image is
+   exactly correct. This is the one place a question type reaches outside
+   its own hostRender() container — a pragmatic, narrowly-scoped exception
+   kept entirely inside this file, not a js/host.js change. */
+
+function hideGenericHostMedia() {
+  const el = document.querySelector('#hq-media');
+  if (el) el.innerHTML = '';
+}
+
+/* Two nested requestAnimationFrame calls so the browser actually paints
+   the STARTING (obscured) style before the transition to the end state is
+   triggered — setting both styles in the same tick would just collapse
+   into the end state with no visible animation at all. */
+function nextPaint(fn) {
+  requestAnimationFrame(() => requestAnimationFrame(fn));
+}
+
+function makeImageRevealType(label, icon, setupReveal) {
+  return {
+    label, icon, graded: true,
+    defaults: () => ({ accepted: [''] }),
+    sanitize: acceptedAnswerSanitize,
+    validate(q) {
+      const problems = acceptedAnswerValidate(q);
+      if (!q.media || !q.media.image) problems.push('needs an image uploaded');
+      return problems;
+    },
+    normalize: acceptedAnswerNormalize,
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    hostRender(el, q, media) {
+      el.className = '';
+      hideGenericHostMedia();
+      if (!media || !media.imageUrl) { el.innerHTML = `<p class="muted" style="text-align:center">${icon} Image unavailable.</p>`; return; }
+      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt=""></div>`;
+      setupReveal(el.querySelector('.reveal-img'), q.time);
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
+  };
+}
+
 /* ---------- shared row editor (answers / options / items / accepted) ---------- */
 function editRowsHtml(rows, opts) {
   return rows.map((r, i) => `
@@ -472,6 +532,75 @@ const QuestionTypes = {
 
   /* ================= guess the sound ================= */
   guesssound: makeAudioGuessType('Guess the Sound', '🔊', '🔊 Players are listening for the sound…'),
+
+  /* ================= blurred picture ================= */
+  blur: makeImageRevealType('Blurred Picture', '🌫️', (imgEl, seconds) => {
+    imgEl.style.filter = 'blur(28px)';
+    imgEl.style.transition = `filter ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.filter = 'blur(0px)'; });
+  }),
+
+  /* ================= zoomed-in picture ================= */
+  zoom: makeImageRevealType('Zoomed-In Picture', '🔍', (imgEl, seconds) => {
+    imgEl.style.transform = 'scale(3)';
+    imgEl.style.transformOrigin = 'center';
+    imgEl.style.transition = `transform ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.transform = 'scale(1)'; });
+  }),
+
+  /* ================= silhouette reveal ================= */
+  silhouette: makeImageRevealType('Silhouette Reveal', '🌑', (imgEl, seconds) => {
+    imgEl.style.filter = 'brightness(0)';
+    imgEl.style.transition = `filter ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.filter = 'brightness(1)'; });
+  }),
+
+  /* ================= puzzle piece reveal ================= */
+  puzzlereveal: {
+    label: 'Puzzle Piece Reveal', icon: '🧩', graded: true,
+    defaults: () => ({ accepted: [''] }),
+    sanitize: acceptedAnswerSanitize,
+    validate(q) {
+      const problems = acceptedAnswerValidate(q);
+      if (!q.media || !q.media.image) problems.push('needs an image uploaded');
+      return problems;
+    },
+    normalize: acceptedAnswerNormalize,
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    // A grid of opaque tiles over the image, each disappearing at its own
+    // staggered moment (CSS transition-delay, not a JS timer per tile) so
+    // the last tile clears exactly when the question's own timer (q.time)
+    // runs out — same "fully revealed right as time's up" pacing as the
+    // filter-based reveal types. Tile reveal order is randomized fresh
+    // each time hostRender runs (once per live question).
+    hostRender(el, q, media) {
+      el.className = '';
+      hideGenericHostMedia();
+      if (!media || !media.imageUrl) { el.innerHTML = `<p class="muted" style="text-align:center">🧩 Image unavailable.</p>`; return; }
+      const COLS = 5, ROWS = 4, total = COLS * ROWS;
+      const order = Array.from({ length: total }, (_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt="">
+        <div class="puzzle-grid" style="grid-template-columns:repeat(${COLS},1fr);grid-template-rows:repeat(${ROWS},1fr)">
+          ${Array.from({ length: total }, () => '<div class="puzzle-tile"></div>').join('')}
+        </div></div>`;
+      const tiles = el.querySelectorAll('.puzzle-tile');
+      const perTile = q.time / total;
+      order.forEach((tileIndex, revealPos) => {
+        tiles[tileIndex].style.transition = 'opacity .3s linear';
+        tiles[tileIndex].style.transitionDelay = `${perTile * revealPos}s`;
+      });
+      nextPaint(() => { tiles.forEach(t => { t.style.opacity = '0'; }); });
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
+  },
 
   /* ================= slider / numeric ================= */
   slider: {
