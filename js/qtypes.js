@@ -28,12 +28,39 @@
      hostReveal(el, q, players, media)   -> fills the host's reveal body
      playerControl(el, payload, submit)  -> renders the phone control; submit(data) once
      editorRender(el, q, onChange)       -> renders/wires type-specific editor fields
+
+     Three more are OPTIONAL, only implemented by a type that keeps media
+     ids somewhere other than the common `media` object (currently just
+     completepicture's per-option images) or needs to send players more
+     than the common `media.image`/`image2` (currently also just
+     completepicture's option images) — every other type leaves all three
+     undefined and js/store.js/host.js/editor.js skip them entirely:
+     extraMediaRefs(q)                   -> extra [{id, kind}] for a SANITIZED
+                                             question — js/store.js
+                                             collectMediaRefs calls this for
+                                             IndexedDB GC and export
+     rawExtraMediaIds(raw)               -> same, but for RAW untrusted import
+                                             JSON — js/store.js
+                                             referencedRawMediaIds calls this
+                                             so import knows which ids are
+                                             safe to decode
+     remapExtraMedia(q, raw, idRemap)    -> mutates q in place, filling in the
+                                             post-import local ids (mirrors
+                                             what remapImportedMedia does for
+                                             q.media) — called once by
+                                             js/store.js importQuizJson
+     buildPlayerCtx(q)                   -> extra async ctx fields merged into
+                                             what js/host.js/editor.js resolve
+                                             for sendsMediaToPlayer types
    }
    `media` on the host side is { imageUrl, videoUrl, audioUrl } object URLs for
    the question's optional illustrative attachment (see js/host.js renderHostMedia) —
-   nothing here sends that attachment to players. The one exception is
-   image-pin, which needs its image on the phone to be usable at all; it opts
-   in via `sendsMediaToPlayer` and receives a data: URL through `ctx.imageDataUrl`. */
+   nothing here sends that attachment to players. The exceptions are
+   image-pin and spot-the-difference, which need their image(s) on the phone
+   to be usable at all (via ctx.imageDataUrl/image2DataUrl), and
+   complete-the-picture, whose answer OPTIONS are themselves images (via
+   ctx.optionImages, built by its own buildPlayerCtx above) — all three opt
+   in via `sendsMediaToPlayer`. */
 
 const ORDER_MAX = 6;
 const POLL_MAX = 6;
@@ -168,6 +195,21 @@ function sanitizeClipSeconds(raw) {
   return n !== null && Number.isInteger(n) && n >= 1 && n <= AUDIO_CLIP_MAX_SEC ? n : null;
 }
 
+// Wires a "▶ Play clip" button's click handler: plays media.audioUrl,
+// auto-pausing after audioClipSeconds if set, and disabling the button
+// for the clip's duration so it can't be re-triggered mid-playback.
+// Shared by makeAudioGuessType and finishlyrics.
+function wireClipPlayButton(btn, media, audioClipSeconds) {
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    const audio = new Audio(media.audioUrl);
+    audio.play().catch(() => {}); // host interaction just happened — a play() rejection here is non-actionable
+    if (audioClipSeconds) setTimeout(() => audio.pause(), audioClipSeconds * 1000);
+    audio.addEventListener('ended', () => { btn.disabled = false; });
+    setTimeout(() => { btn.disabled = false; }, (audioClipSeconds || 9999) * 1000 + 300);
+  });
+}
+
 /* guesssong/guesssound: identical mechanic (attach an audio clip, players
    type what they heard), differing only in label/icon/placeholder
    wording — a shared factory avoids maintaining two near-duplicate
@@ -193,15 +235,7 @@ function makeAudioGuessType(label, icon, prompt) {
       const clipNote = q.audioClipSeconds ? ` (first ${q.audioClipSeconds}s)` : '';
       el.innerHTML = `<p class="muted" style="text-align:center">${prompt}${clipNote}</p>
         <button type="button" class="btn primary big qh-play-clip">▶ Play clip</button>`;
-      el.querySelector('.qh-play-clip').addEventListener('click', e => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        const audio = new Audio(media.audioUrl);
-        audio.play().catch(() => {}); // host interaction just happened — a play() rejection here is non-actionable
-        if (q.audioClipSeconds) setTimeout(() => audio.pause(), q.audioClipSeconds * 1000);
-        audio.addEventListener('ended', () => { btn.disabled = false; });
-        setTimeout(() => { btn.disabled = false; }, (q.audioClipSeconds || 9999) * 1000 + 300);
-      });
+      wireClipPlayButton(el.querySelector('.qh-play-clip'), media, q.audioClipSeconds);
     },
     hostReveal: acceptedAnswerHostReveal,
     playerControl: acceptedAnswerPlayerControl,
@@ -218,6 +252,112 @@ function makeAudioGuessType(label, icon, prompt) {
       });
     },
   };
+}
+
+/* ---------- shared "progressive image reveal" behavior ----------
+   Puzzle Piece Reveal, Blurred Picture, Zoomed-In Picture, and Silhouette
+   Reveal are all the same mechanic underneath: an attached image,
+   obscured, that becomes clear over the course of the question's own
+   timer (q.time) — players type a guess the same way as typed/scramble,
+   matched against an accepted list. Only what's visually applied to the
+   image differs (a CSS filter/transform transition for the three
+   filter-based ones, a tile grid for the puzzle one — see puzzlereveal's
+   own entry below, which doesn't fit this factory).
+
+   These require hiding the generic host-only media area (#hq-media) for
+   the live question: that pipeline (js/media.js resolveMediaUrls/
+   mediaHtml, driven generically for every type from js/host.js) would
+   otherwise show the SAME image fully clear right next to the obscured
+   one, defeating the entire point. It's deliberately left alone again for
+   the reveal phase (#hr-media), where showing the real, clear image is
+   exactly correct. This is the one place a question type reaches outside
+   its own hostRender() container — a pragmatic, narrowly-scoped exception
+   kept entirely inside this file, not a js/host.js change. */
+
+function hideGenericHostMedia() {
+  const el = document.querySelector('#hq-media');
+  if (el) el.innerHTML = '';
+}
+
+/* Two nested requestAnimationFrame calls so the browser actually paints
+   the STARTING (obscured) style before the transition to the end state is
+   triggered — setting both styles in the same tick would just collapse
+   into the end state with no visible animation at all. */
+function nextPaint(fn) {
+  requestAnimationFrame(() => requestAnimationFrame(fn));
+}
+
+function makeImageRevealType(label, icon, setupReveal) {
+  return {
+    label, icon, graded: true,
+    defaults: () => ({ accepted: [''] }),
+    sanitize: acceptedAnswerSanitize,
+    validate(q) {
+      const problems = acceptedAnswerValidate(q);
+      if (!q.media || !q.media.image) problems.push('needs an image uploaded');
+      return problems;
+    },
+    normalize: acceptedAnswerNormalize,
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    hostRender(el, q, media) {
+      el.className = '';
+      hideGenericHostMedia();
+      if (!media || !media.imageUrl) { el.innerHTML = `<p class="muted" style="text-align:center">${icon} Image unavailable.</p>`; return; }
+      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt=""></div>`;
+      setupReveal(el.querySelector('.reveal-img'), q.time);
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
+  };
+}
+
+/* ---------- shared "pick one of up to 4 text-answer tiles" behavior ----------
+   used by mc and finishlyrics: both show the answer text on the HOST screen
+   and shape-only tiles on the phone, graded by tile index exactly the same
+   way; only what else the host screen shows (nothing, vs. a "Play clip"
+   button above the tiles) differs between them. */
+function mcAnswerValidate(q) {
+  const problems = [];
+  const filled = q.answers.filter(a => a.text.trim());
+  if (filled.length < 2) problems.push('needs at least 2 answers');
+  if (!q.answers.some(a => a.correct && a.text.trim())) problems.push('has no correct answer marked');
+  return problems;
+}
+function mcAnswerNormalize(q) { return { ...q, answers: q.answers.filter(a => a.text.trim()) }; }
+function mcAnswerPlayerPayload(q) { return { count: q.answers.length }; }
+function mcAnswerIsCorrect(q, s) { return !!s && Number.isInteger(s.c) && !!q.answers[s.c] && !!q.answers[s.c].correct; }
+function mcAnswerSanitizeSubmission(q, raw) { return safeTileIndex(raw, q.answers.length); }
+function mcAnswerHostReveal(el, q, players) {
+  const correctSet = new Set(q.answers.map((a, k) => a.correct ? k : -1).filter(k => k >= 0));
+  const counts = q.answers.map((_, k) => players.filter(p => p.submission && p.submission.c === k).length);
+  const max = Math.max(1, ...counts);
+  el.innerHTML = `
+    <div class="histo">${counts.map((c, k) => `
+      <div class="bar-wrap"><span class="bar-count">${c}</span>
+        <div class="bar c${k}" style="height:${Math.round(120 * c / max) + 6}px"></div>
+        <span class="bar-shape">${SHAPES[k]}${correctSet.has(k) ? ' ✓' : ''}</span></div>`).join('')}</div>
+    <div class="answer-grid">${q.answers.map((a, k) => `
+      <div class="answer-tile c${k} ${correctSet.has(k) ? '' : 'faded'}">
+        <span class="shape">${SHAPES[k]}</span>${esc(a.text)}${correctSet.has(k) ? '<span class="mark">✓</span>' : ''}
+      </div>`).join('')}</div>`;
+}
+function mcAnswerPlayerControl(el, payload, submit) {
+  el.className = 'answer-grid player';
+  el.innerHTML = tileGridHtml(Array(payload.count).fill(null));
+  const send = fireOnce(c => submit({ c }));
+  el.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-c]');
+    if (btn) send(+btn.dataset.c);
+  });
+}
+function mcAnswerEditorRender(el, q, onChange) {
+  el.innerHTML = `<div class="rows">${editRowsHtml(q.answers, { shapes: true, checkbox: true, min: 2, placeholder: i => `Answer ${i + 1}${i >= 2 ? ' (optional)' : ''}` })}</div>
+    ${q.answers.length < 4 ? '<button type="button" class="btn full" data-act="add">+ Add answer</button>' : ''}
+    <p class="muted hint">Tick the checkbox on every correct answer (at least one).</p>`;
+  wireEditRows(el, q, 'answers', onChange, { max: 4, checkbox: true });
 }
 
 /* ---------- shared row editor (answers / options / items / accepted) ---------- */
@@ -253,6 +393,28 @@ function wireEditRows(el, q, field, onChange, opts) {
   });
 }
 
+/* ---------- shared "tap the correct spot on an image" behavior ----------
+   used by imagepin and spotdifference: both grade a submitted (x,y)
+   fraction of the image against a stored correct pin within a tolerance
+   radius. Only how many images get shown/sent (one vs. two) differs. */
+function pinSanitize(raw) {
+  const r = raw || {};
+  const p = r.pin || {};
+  return {
+    pin: { x: clamp(safeNumber(p.x, 0.5), 0, 1), y: clamp(safeNumber(p.y, 0.5), 0, 1) },
+    tolerance: clamp(safeNumber(r.tolerance, 0.08), 0.01, 0.5),
+  };
+}
+function pinIsCorrect(q, s) {
+  if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return false;
+  return Math.hypot(s.x - q.pin.x, s.y - q.pin.y) <= q.tolerance;
+}
+function pinSanitizeSubmission(q, raw) {
+  const x = raw && raw.x, y = raw && raw.y;
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
+}
+
 const QuestionTypes = {
 
   /* ================= multiple choice ================= */
@@ -260,47 +422,15 @@ const QuestionTypes = {
     label: 'Multiple choice', icon: '🔘', graded: true,
     defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
     sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
-    validate(q) {
-      const problems = [];
-      const filled = q.answers.filter(a => a.text.trim());
-      if (filled.length < 2) problems.push('needs at least 2 answers');
-      if (!q.answers.some(a => a.correct && a.text.trim())) problems.push('has no correct answer marked');
-      return problems;
-    },
-    normalize: q => ({ ...q, answers: q.answers.filter(a => a.text.trim()) }),
-    playerPayload: q => ({ count: q.answers.length }),
-    isCorrect: (q, s) => !!s && Number.isInteger(s.c) && !!q.answers[s.c] && !!q.answers[s.c].correct,
-    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.answers.length),
+    validate: mcAnswerValidate,
+    normalize: mcAnswerNormalize,
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
     hostRender(el, q) { el.innerHTML = tileGridHtml(q.answers.map(a => a.text)); el.className = 'answer-grid'; },
-    hostReveal(el, q, players) {
-      const correctSet = new Set(q.answers.map((a, k) => a.correct ? k : -1).filter(k => k >= 0));
-      const counts = q.answers.map((_, k) => players.filter(p => p.submission && p.submission.c === k).length);
-      const max = Math.max(1, ...counts);
-      el.innerHTML = `
-        <div class="histo">${counts.map((c, k) => `
-          <div class="bar-wrap"><span class="bar-count">${c}</span>
-            <div class="bar c${k}" style="height:${Math.round(120 * c / max) + 6}px"></div>
-            <span class="bar-shape">${SHAPES[k]}${correctSet.has(k) ? ' ✓' : ''}</span></div>`).join('')}</div>
-        <div class="answer-grid">${q.answers.map((a, k) => `
-          <div class="answer-tile c${k} ${correctSet.has(k) ? '' : 'faded'}">
-            <span class="shape">${SHAPES[k]}</span>${esc(a.text)}${correctSet.has(k) ? '<span class="mark">✓</span>' : ''}
-          </div>`).join('')}</div>`;
-    },
-    playerControl(el, payload, submit) {
-      el.className = 'answer-grid player';
-      el.innerHTML = tileGridHtml(Array(payload.count).fill(null));
-      const send = fireOnce(c => submit({ c }));
-      el.addEventListener('click', e => {
-        const btn = e.target.closest('button[data-c]');
-        if (btn) send(+btn.dataset.c);
-      });
-    },
-    editorRender(el, q, onChange) {
-      el.innerHTML = `<div class="rows">${editRowsHtml(q.answers, { shapes: true, checkbox: true, min: 2, placeholder: i => `Answer ${i + 1}${i >= 2 ? ' (optional)' : ''}` })}</div>
-        ${q.answers.length < 4 ? '<button type="button" class="btn full" data-act="add">+ Add answer</button>' : ''}
-        <p class="muted hint">Tick the checkbox on every correct answer (at least one).</p>`;
-      wireEditRows(el, q, 'answers', onChange, { max: 4, checkbox: true });
-    },
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
+    editorRender: mcAnswerEditorRender,
   },
 
   /* ================= true / false ================= */
@@ -472,6 +602,124 @@ const QuestionTypes = {
 
   /* ================= guess the sound ================= */
   guesssound: makeAudioGuessType('Guess the Sound', '🔊', '🔊 Players are listening for the sound…'),
+
+  /* ================= finish the lyrics ================= */
+  // Plays an audio clip (song, paused where the host stops it, same
+  // "Play clip" control as guesssong/guesssound) then players choose the
+  // next line from up to 4 answer tiles — same text-answer-tile mechanic
+  // and grading as mc, just shared via the mcAnswer* helpers above.
+  finishlyrics: {
+    label: 'Finish the Lyrics', icon: '🎤', graded: true,
+    defaults: () => ({
+      answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }],
+      audioClipSeconds: null,
+    }),
+    sanitize: raw => ({
+      answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }),
+      audioClipSeconds: sanitizeClipSeconds(raw && raw.audioClipSeconds),
+    }),
+    validate(q) {
+      const problems = mcAnswerValidate(q);
+      if (!q.media || !q.media.audio) problems.push('needs an audio clip uploaded');
+      return problems;
+    },
+    normalize: q => ({ ...mcAnswerNormalize(q), audioClipSeconds: q.audioClipSeconds }),
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
+    hostRender(el, q, media) {
+      el.className = 'answer-grid';
+      if (!media || !media.audioUrl) { el.innerHTML = `<p class="muted" style="text-align:center">🎤 Audio unavailable.</p>`; return; }
+      const clipNote = q.audioClipSeconds ? ` (first ${q.audioClipSeconds}s)` : '';
+      el.innerHTML = `<div class="finishlyrics-clip">
+          <button type="button" class="btn primary big qh-play-clip">▶ Play clip${clipNote}</button>
+        </div>${tileGridHtml(q.answers.map(a => a.text))}`;
+      wireClipPlayButton(el.querySelector('.qh-play-clip'), media, q.audioClipSeconds);
+    },
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
+    editorRender(el, q, onChange) {
+      mcAnswerEditorRender(el, q, onChange);
+      const clipRow = document.createElement('div');
+      clipRow.className = 'q-opts';
+      clipRow.innerHTML = `<label>Clip length in seconds (optional — blank plays the whole file)
+        <input type="number" id="qt-clipsec" min="1" max="${AUDIO_CLIP_MAX_SEC}" step="1" value="${q.audioClipSeconds || ''}"></label>`;
+      el.appendChild(clipRow);
+      el.querySelector('#qt-clipsec').addEventListener('change', e => {
+        q.audioClipSeconds = e.target.value === '' ? null : sanitizeClipSeconds(+e.target.value);
+        onChange();
+      });
+    },
+  },
+
+  /* ================= blurred picture ================= */
+  blur: makeImageRevealType('Blurred Picture', '🌫️', (imgEl, seconds) => {
+    imgEl.style.filter = 'blur(28px)';
+    imgEl.style.transition = `filter ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.filter = 'blur(0px)'; });
+  }),
+
+  /* ================= zoomed-in picture ================= */
+  zoom: makeImageRevealType('Zoomed-In Picture', '🔍', (imgEl, seconds) => {
+    imgEl.style.transform = 'scale(3)';
+    imgEl.style.transformOrigin = 'center';
+    imgEl.style.transition = `transform ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.transform = 'scale(1)'; });
+  }),
+
+  /* ================= silhouette reveal ================= */
+  silhouette: makeImageRevealType('Silhouette Reveal', '🌑', (imgEl, seconds) => {
+    imgEl.style.filter = 'brightness(0)';
+    imgEl.style.transition = `filter ${seconds}s linear`;
+    nextPaint(() => { imgEl.style.filter = 'brightness(1)'; });
+  }),
+
+  /* ================= puzzle piece reveal ================= */
+  puzzlereveal: {
+    label: 'Puzzle Piece Reveal', icon: '🧩', graded: true,
+    defaults: () => ({ accepted: [''] }),
+    sanitize: acceptedAnswerSanitize,
+    validate(q) {
+      const problems = acceptedAnswerValidate(q);
+      if (!q.media || !q.media.image) problems.push('needs an image uploaded');
+      return problems;
+    },
+    normalize: acceptedAnswerNormalize,
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    // A grid of opaque tiles over the image, each disappearing at its own
+    // staggered moment (CSS transition-delay, not a JS timer per tile) so
+    // the last tile clears exactly when the question's own timer (q.time)
+    // runs out — same "fully revealed right as time's up" pacing as the
+    // filter-based reveal types. Tile reveal order is randomized fresh
+    // each time hostRender runs (once per live question).
+    hostRender(el, q, media) {
+      el.className = '';
+      hideGenericHostMedia();
+      if (!media || !media.imageUrl) { el.innerHTML = `<p class="muted" style="text-align:center">🧩 Image unavailable.</p>`; return; }
+      const COLS = 5, ROWS = 4, total = COLS * ROWS;
+      const order = Array.from({ length: total }, (_, i) => i);
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt="">
+        <div class="puzzle-grid" style="grid-template-columns:repeat(${COLS},1fr);grid-template-rows:repeat(${ROWS},1fr)">
+          ${Array.from({ length: total }, () => '<div class="puzzle-tile"></div>').join('')}
+        </div></div>`;
+      const tiles = el.querySelectorAll('.puzzle-tile');
+      const perTile = q.time / total;
+      order.forEach((tileIndex, revealPos) => {
+        tiles[tileIndex].style.transition = 'opacity .3s linear';
+        tiles[tileIndex].style.transitionDelay = `${perTile * revealPos}s`;
+      });
+      nextPaint(() => { tiles.forEach(t => { t.style.opacity = '0'; }); });
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
+  },
 
   /* ================= slider / numeric ================= */
   slider: {
@@ -700,26 +948,12 @@ const QuestionTypes = {
   imagepin: {
     label: 'Image pin', icon: '📍', graded: true, sendsMediaToPlayer: true,
     defaults: () => ({ pin: { x: 0.5, y: 0.5 }, tolerance: 0.08 }),
-    sanitize(raw) {
-      const r = raw || {};
-      const p = r.pin || {};
-      return {
-        pin: { x: clamp(safeNumber(p.x, 0.5), 0, 1), y: clamp(safeNumber(p.y, 0.5), 0, 1) },
-        tolerance: clamp(safeNumber(r.tolerance, 0.08), 0.01, 0.5),
-      };
-    },
+    sanitize: pinSanitize,
     validate(q) { return (q.media && q.media.image) ? [] : ['needs an image uploaded']; },
     normalize: q => ({ ...q }),
     playerPayload: (q, ctx) => ({ image: ctx.imageDataUrl, tolerance: q.tolerance }),
-    isCorrect(q, s) {
-      if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.y)) return false;
-      return Math.hypot(s.x - q.pin.x, s.y - q.pin.y) <= q.tolerance;
-    },
-    sanitizeSubmission(q, raw) {
-      const x = raw && raw.x, y = raw && raw.y;
-      if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null;
-      return { x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
-    },
+    isCorrect: pinIsCorrect,
+    sanitizeSubmission: pinSanitizeSubmission,
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">📍 Players are tapping their guess on their phones…</p>`; },
     hostReveal(el, q, players, media) {
       const dots = players.filter(p => p.submission && Number.isFinite(p.submission.x)).map(p => `
@@ -770,6 +1004,227 @@ const QuestionTypes = {
       });
       el.querySelector('#qt-tol').addEventListener('input', e => { q.tolerance = Number(e.target.value); onChange(); });
       renderPreview();
+    },
+  },
+
+  /* ================= spot the difference ================= */
+  // Two near-identical images shown side by side; the correct spot (where
+  // they differ) is graded exactly like image-pin's single-image pin/
+  // tolerance mechanic (shared via pinSanitize/pinIsCorrect/
+  // pinSanitizeSubmission) — a tap on EITHER image scores against the
+  // same (x,y) fraction, since both images are expected to be the same
+  // size/composition. Needs its own upload UI for BOTH images (not the
+  // editor's generic single "🖼️ Image" button) so its own live preview
+  // stays in sync the instant either one is attached — same self-
+  // contained pattern image-pin already uses for its one image.
+  spotdifference: {
+    label: 'Spot the Difference', icon: '🔎', graded: true, sendsMediaToPlayer: true,
+    defaults: () => ({ pin: { x: 0.5, y: 0.5 }, tolerance: 0.08 }),
+    sanitize: pinSanitize,
+    validate(q) {
+      const problems = [];
+      if (!q.media || !q.media.image) problems.push('needs a first image uploaded');
+      if (!q.media || !q.media.image2) problems.push('needs a second image uploaded');
+      return problems;
+    },
+    normalize: q => ({ ...q }),
+    playerPayload: (q, ctx) => ({ image: ctx.imageDataUrl, image2: ctx.image2DataUrl, tolerance: q.tolerance }),
+    isCorrect: pinIsCorrect,
+    sanitizeSubmission: pinSanitizeSubmission,
+    hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">🔎 Players are tapping the difference on their phones…</p>`; },
+    hostReveal(el, q, players, media) {
+      const dots = players.filter(p => p.submission && Number.isFinite(p.submission.x)).map(p => `
+        <div class="pin-dot ${this.isCorrect(q, p.submission) ? 'good' : 'bad'}" style="left:${p.submission.x * 100}%;top:${p.submission.y * 100}%" title="${esc(p.name)}"></div>`).join('');
+      const pinOverlay = `<div class="pin-dot correct" style="left:${q.pin.x * 100}%;top:${q.pin.y * 100}%"></div>${dots}`;
+      el.innerHTML = (media && media.imageUrl && media.image2Url)
+        ? `<div class="spotdiff-wrap">
+             <div class="imagepin-wrap"><img src="${media.imageUrl}" alt="">${pinOverlay}</div>
+             <div class="imagepin-wrap"><img src="${media.image2Url}" alt="">${pinOverlay}</div>
+           </div>`
+        : '<p class="muted">Both images are required.</p>';
+    },
+    playerControl(el, payload, submit) {
+      el.className = 'spotdiff-control';
+      el.innerHTML = (payload.image && payload.image2)
+        ? `<div class="spotdiff-wrap">
+             <div class="imagepin-wrap"><img src="${payload.image}" alt=""></div>
+             <div class="imagepin-wrap"><img src="${payload.image2}" alt=""></div>
+           </div>`
+        : '<p class="on-dark">Loading images…</p>';
+      const send = fireOnce((x, y) => submit({ x, y }));
+      el.querySelectorAll('.imagepin-wrap').forEach(wrap => wrap.addEventListener('click', e => {
+        const rect = wrap.getBoundingClientRect();
+        const x = (e.clientX - rect.left) / rect.width, y = (e.clientY - rect.top) / rect.height;
+        send(x, y);
+        el.querySelectorAll('.imagepin-wrap').forEach(w => w.insertAdjacentHTML('beforeend', `<div class="pin-dot good" style="left:${x * 100}%;top:${y * 100}%"></div>`));
+      }));
+    },
+    editorRender(el, q, onChange) {
+      el.innerHTML = `
+        <label class="muted hint">First image (before)<input type="file" id="qt-img1" accept="image/*"></label>
+        <label class="muted hint">Second image (after / changed)<input type="file" id="qt-img2" accept="image/*"></label>
+        <div id="qt-imgwrap" class="spotdiff-wrap"></div>
+        <label>Tolerance radius <input type="range" id="qt-tol" min="0.02" max="0.3" step="0.01" value="${q.tolerance}"></label>`;
+      const renderPreview = async () => {
+        const wrap = el.querySelector('#qt-imgwrap');
+        if (!q.media.image || !q.media.image2) { wrap.innerHTML = '<p class="muted">Upload both images, then click either one to place the correct pin.</p>'; return; }
+        const [url1, url2] = await Promise.all([getMediaUrl(q.media.image), getMediaUrl(q.media.image2)]);
+        const pinDot = `<div class="pin-dot correct" style="left:${q.pin.x * 100}%;top:${q.pin.y * 100}%"></div>`;
+        wrap.innerHTML = `
+          <div class="imagepin-wrap"><img src="${url1}" alt="">${pinDot}</div>
+          <div class="imagepin-wrap"><img src="${url2}" alt="">${pinDot}</div>`;
+        wrap.querySelectorAll('.imagepin-wrap').forEach(w => w.addEventListener('click', e => {
+          const rect = e.currentTarget.getBoundingClientRect();
+          q.pin = { x: clamp((e.clientX - rect.left) / rect.width, 0, 1), y: clamp((e.clientY - rect.top) / rect.height, 0, 1) };
+          onChange();
+          renderPreview();
+        }));
+      };
+      const wireUpload = (inputId, slot) => {
+        el.querySelector(inputId).addEventListener('change', async e => {
+          const file = e.target.files[0];
+          if (!file) return;
+          const error = validateMediaFile(file, 'image');
+          if (error) { alert(error); e.target.value = ''; return; }
+          const oldId = q.media[slot];
+          q.media[slot] = await saveMedia(file);
+          onChange();
+          renderPreview();
+          await releaseMediaIfUnused(oldId);
+        });
+      };
+      wireUpload('#qt-img1', 'image');
+      wireUpload('#qt-img2', 'image2');
+      el.querySelector('#qt-tol').addEventListener('input', e => { q.tolerance = Number(e.target.value); onChange(); });
+      renderPreview();
+    },
+  },
+
+  /* ================= complete the picture ================= */
+  // The one type whose answer OPTIONS are themselves images rather than
+  // text: the main picture (the common q.media.image slot, shown to the
+  // host/player like any other type's illustrative image) plus up to 4
+  // candidate "piece" images, graded by tile index exactly like mc. The
+  // option images live in their own q.options[].image ids, OUTSIDE the
+  // common `media` object — the only type that needs the optional
+  // extraMediaRefs/rawExtraMediaIds/remapExtraMedia/buildPlayerCtx hooks
+  // (see the registry contract comment at the top of this file) so
+  // IndexedDB GC, export/import, and sending them to players all still
+  // work through the normal generic machinery.
+  completepicture: {
+    label: 'Complete the Picture', icon: '🧩', graded: true, sendsMediaToPlayer: true,
+    defaults: () => ({ options: [{ image: null, correct: false }, { image: null, correct: false }, { image: null, correct: false }, { image: null, correct: false }] }),
+    // Image ids are deliberately left null here, same as media.image/
+    // image2 — they're filled in by remapExtraMedia() once import knows
+    // which ids are safe (see js/store.js importQuizJson).
+    sanitize(raw) {
+      const rows = Array.isArray(raw && raw.options) ? raw.options : [];
+      return { options: rows.slice(0, 4).map(r => ({ image: null, correct: safeBool(r && r.correct, false) })) };
+    },
+    validate(q) {
+      const problems = [];
+      if (!q.media || !q.media.image) problems.push('needs a main image uploaded');
+      const filled = (q.options || []).filter(o => o.image);
+      if (filled.length < 2) problems.push('needs at least 2 answer-option images');
+      if (!filled.some(o => o.correct)) problems.push('has no correct answer-option image marked');
+      return problems;
+    },
+    normalize: q => ({ ...q, options: (q.options || []).filter(o => o.image) }),
+    playerPayload: (q, ctx) => ({ image: ctx.imageDataUrl, optionImages: ctx.optionImages }),
+    isCorrect: (q, s) => !!s && Number.isInteger(s.c) && !!q.options[s.c] && !!q.options[s.c].correct,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.options.length),
+    extraMediaRefs: q => (q.options || []).filter(o => o.image).map(o => ({ id: o.image, kind: 'image' })),
+    rawExtraMediaIds: raw => (Array.isArray(raw && raw.options) ? raw.options : []).slice(0, 4)
+      .map(r => ({ id: r && r.image, kind: 'image' })).filter(r => typeof r.id === 'string' && r.id),
+    remapExtraMedia(q, raw, idRemap) {
+      const rawRows = Array.isArray(raw && raw.options) ? raw.options : [];
+      q.options.forEach((opt, i) => {
+        const oldId = rawRows[i] && rawRows[i].image;
+        opt.image = (typeof oldId === 'string' && idRemap[oldId]) ? idRemap[oldId] : null;
+      });
+    },
+    async buildPlayerCtx(q) {
+      const optionImages = await Promise.all((q.options || []).map(o => o.image ? mediaToDataUrl(o.image) : null));
+      return { optionImages };
+    },
+    hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">🧩 Players are choosing the missing piece on their phones…</p>`; },
+    // Option image URLs aren't in the `media` param (that only covers the
+    // common media.image/image2/video/audio slots) — resolved here instead,
+    // directly from each option's own stored id, same functions (getMediaUrl)
+    // every other type's editorRender already uses for its own previews.
+    // Guarded by document.contains(el): the host may have moved on to a
+    // different question by the time these (already-local, near-instant)
+    // IndexedDB lookups resolve.
+    hostReveal(el, q, players) {
+      el.innerHTML = '<p class="muted" style="text-align:center">Loading option images…</p>';
+      Promise.all((q.options || []).map(o => o.image ? getMediaUrl(o.image) : null)).then(urls => {
+        if (!document.contains(el)) return;
+        const counts = q.options.map((_, k) => players.filter(p => p.submission && p.submission.c === k).length);
+        const max = Math.max(1, ...counts);
+        el.innerHTML = `
+          <div class="histo">${counts.map((c, k) => `
+            <div class="bar-wrap"><span class="bar-count">${c}</span>
+              <div class="bar c${k}" style="height:${Math.round(120 * c / max) + 6}px"></div>
+              <span class="bar-shape">${SHAPES[k]}${q.options[k].correct ? ' ✓' : ''}</span></div>`).join('')}</div>
+          <div class="option-img-grid">${q.options.map((o, k) => `
+            <div class="option-img-tile c${k} ${o.correct ? '' : 'faded'}">
+              ${urls[k] ? `<img src="${urls[k]}" alt="">` : ''}
+              <span class="shape">${SHAPES[k]}</span>${o.correct ? '<span class="mark">✓</span>' : ''}
+            </div>`).join('')}</div>`;
+      });
+    },
+    playerControl(el, payload, submit) {
+      el.className = 'completepicture-control';
+      const mainImg = payload.image ? `<div class="imagepin-wrap" style="cursor:default"><img src="${payload.image}" alt=""></div>` : '';
+      const options = (payload.optionImages || []).map((url, k) => `
+        <button type="button" class="option-img-tile c${k}" data-c="${k}">
+          ${url ? `<img src="${url}" alt="">` : ''}
+          <span class="shape">${SHAPES[k]}</span>
+        </button>`).join('');
+      el.innerHTML = `${mainImg}<div class="option-img-grid player">${options}</div>`;
+      const send = fireOnce(c => submit({ c }));
+      el.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-c]');
+        if (btn) send(+btn.dataset.c);
+      });
+    },
+    editorRender(el, q, onChange) {
+      el.innerHTML = `<p class="muted hint">Main image: use the "🖼️ Image" button above. Up to 4 candidate "piece" images below — tick the checkbox on every correct one (at least one):</p>
+        <div class="rows">${q.options.map((o, i) => `
+          <div class="ans-row" data-i="${i}">
+            <div class="ans-swatch c${i}">${SHAPES[i]}</div>
+            <div class="opt-img-preview" id="opt-preview-${i}"></div>
+            <input type="file" accept="image/*" class="opt-img-input" data-i="${i}">
+            <input type="checkbox" title="Correct answer" ${o.correct ? 'checked' : ''} class="opt-img-correct" data-i="${i}">
+          </div>`).join('')}</div>`;
+      const renderPreviews = async () => {
+        for (let i = 0; i < q.options.length; i++) {
+          const wrap = el.querySelector(`#opt-preview-${i}`);
+          if (!wrap) continue;
+          wrap.innerHTML = q.options[i].image ? `<img src="${await getMediaUrl(q.options[i].image)}" alt="">` : '<span class="muted">No image</span>';
+        }
+      };
+      el.querySelectorAll('.opt-img-input').forEach(input => {
+        input.addEventListener('change', async e => {
+          const i = +e.target.dataset.i;
+          const file = e.target.files[0];
+          if (!file) return;
+          const error = validateMediaFile(file, 'image');
+          if (error) { alert(error); e.target.value = ''; return; }
+          const oldId = q.options[i].image;
+          q.options[i].image = await saveMedia(file);
+          onChange();
+          renderPreviews();
+          await releaseMediaIfUnused(oldId);
+        });
+      });
+      el.querySelectorAll('.opt-img-correct').forEach(cb => {
+        cb.addEventListener('change', e => {
+          q.options[+e.target.dataset.i].correct = e.target.checked;
+          onChange();
+        });
+      });
+      renderPreviews();
     },
   },
 };

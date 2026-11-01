@@ -192,6 +192,7 @@ async function resolveMediaUrls(media) {
   const out = {};
   if (media) {
     if (media.image) out.imageUrl = await getMediaUrl(media.image);
+    if (media.image2) out.image2Url = await getMediaUrl(media.image2);
     if (media.video) out.videoUrl = await getMediaUrl(media.video);
     if (media.audio) out.audioUrl = await getMediaUrl(media.audio);
   }

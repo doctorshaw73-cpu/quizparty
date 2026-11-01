@@ -330,6 +330,42 @@ button, input, select, textarea { font: inherit; }
 }
 .scramble-space { width: 1.2rem; flex: none; }
 
+/* ---------- progressive image reveal (blur / zoom / silhouette / puzzle) ---------- */
+.reveal-wrap {
+  position: relative; max-width: 520px; margin: 0 auto; overflow: hidden;
+  border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.3); line-height: 0;
+}
+.reveal-img { display: block; width: 100%; height: auto; }
+.puzzle-grid { position: absolute; inset: 0; display: grid; }
+.puzzle-tile { background: #1a1a2e; border: 1px solid rgba(255,255,255,.06); }
+
+/* ---------- finish the lyrics (clip button above the answer tiles) ---------- */
+.finishlyrics-clip { text-align: center; padding: .5rem 0 1rem; }
+
+/* ---------- spot the difference (two images side by side) ---------- */
+.spotdiff-wrap { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; padding: 0 1rem; }
+.spotdiff-wrap .imagepin-wrap { max-width: 47%; }
+
+/* ---------- complete the picture (image answer-option tiles) ---------- */
+.option-img-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; padding: 0 .5rem .8rem; }
+.option-img-tile {
+  border: 0; border-radius: 6px; background: #1a1a2e; cursor: default; overflow: hidden;
+  min-height: 84px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .4rem;
+  position: relative; border-bottom: 6px solid rgba(0,0,0,.25);
+}
+.option-img-tile img { max-width: 100%; max-height: 10rem; border-radius: 4px; }
+.option-img-tile .shape { font-size: 1.4rem; }
+.option-img-tile.faded { opacity: .25; }
+.option-img-tile .mark { position: absolute; top: .3rem; right: .4rem; font-size: 1.6rem; }
+.option-img-grid.player { flex: 1; align-content: stretch; padding: .5rem; }
+.option-img-grid.player .option-img-tile,
+.option-img-grid.player button.option-img-tile { cursor: pointer; min-height: 18vh; width: 100%; font: inherit; color: inherit; }
+.option-img-grid.player .option-img-tile:active { transform: scale(.97); }
+.completepicture-control { display: flex; flex-direction: column; height: 100%; }
+.completepicture-control .imagepin-wrap { max-width: 60%; margin: .5rem auto; }
+.opt-img-preview { width: 60px; height: 60px; flex: none; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.2); border-radius: 4px; overflow: hidden; }
+.opt-img-preview img { max-width: 100%; max-height: 100%; }
+
 /* ---------- typed / slider / word cloud / open-ended player controls ---------- */
 .input-control { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 1rem; padding: 1.5rem; }
 .input-control input[type=text], .input-control textarea {

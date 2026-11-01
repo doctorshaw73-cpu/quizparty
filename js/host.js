@@ -207,14 +207,17 @@ class HostGame {
 
   /* ---------- media ---------- */
 
-  /* The only media ever sent to a player: image-pin's target image, which
-     the phone can't do anything useful without. Every other question type
-     keeps its media host-only (see js/media.js resolveMediaUrls/mediaHtml,
-     shared with the editor's live preview). */
+  /* The only media ever sent to a player: image-pin's and spot-the-
+     difference's target image(s), which the phone can't do anything
+     useful without. Every other question type keeps its media host-only
+     (see js/media.js resolveMediaUrls/mediaHtml, shared with the editor's
+     live preview). */
   async resolvePlayerCtx(q, type) {
     if (!type.sendsMediaToPlayer) return {};
     const imageDataUrl = q.media && q.media.image ? await mediaToDataUrl(q.media.image) : null;
-    return { imageDataUrl };
+    const image2DataUrl = q.media && q.media.image2 ? await mediaToDataUrl(q.media.image2) : null;
+    const extra = type.buildPlayerCtx ? await type.buildPlayerCtx(q) : {};
+    return { imageDataUrl, image2DataUrl, ...extra };
   }
 
   renderHostMedia(elId, media, videoEmbed) {

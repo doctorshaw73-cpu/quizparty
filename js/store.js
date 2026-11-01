@@ -2,7 +2,10 @@
 
 const LS_KEY = 'quizparty.quizzes.v1';
 
-function emptyMedia() { return { image: null, video: null, audio: null }; }
+// image2 is only ever used by spot-the-difference (a second image alongside
+// the common `image` slot) — every other type just leaves it null, same as
+// any slot it doesn't use.
+function emptyMedia() { return { image: null, image2: null, video: null, audio: null }; }
 
 function sampleQuiz() {
   const q = (text, answers, correct, time = 20) => ({
@@ -100,14 +103,21 @@ function normalizeQuiz(quiz) {
 
 /* Every {id, kind} a quiz's questions reference — the kind comes from which
    slot (image/video/audio) the id is stored under, which is also the
-   expected kind for validating that blob's actual MIME (see exportQuiz). */
+   expected kind for validating that blob's actual MIME (see exportQuiz).
+   A type that keeps media ids outside the common `media` object (currently
+   just completepicture's per-option images) declares its own via an
+   optional `extraMediaRefs(q)` on its registry entry, so this stays the
+   one place GC/export walk — no type-specific knowledge lives here. */
 function collectMediaRefs(quiz) {
   const refs = [];
   quiz.questions.forEach(q => {
-    if (!q.media) return;
-    for (const kind of ['image', 'video', 'audio']) {
-      if (q.media[kind]) refs.push({ id: q.media[kind], kind });
+    if (q.media) {
+      for (const slot of ['image', 'image2', 'video', 'audio']) {
+        if (q.media[slot]) refs.push({ id: q.media[slot], kind: slot === 'image2' ? 'image' : slot });
+      }
     }
+    const type = questionTypeOf(q);
+    if (type.extraMediaRefs) refs.push(...type.extraMediaRefs(q));
   });
   return refs;
 }
@@ -187,10 +197,21 @@ function referencedRawMediaIds(rawQuestions) {
   const kindById = new Map();
   for (const raw of rawQuestions) {
     const media = raw && raw.media;
-    if (!media || typeof media !== 'object') continue;
-    for (const kind of ['image', 'video', 'audio']) {
-      const id = media[kind];
-      if (typeof id === 'string' && id && !kindById.has(id)) kindById.set(id, kind);
+    if (media && typeof media === 'object') {
+      for (const slot of ['image', 'image2', 'video', 'audio']) {
+        const id = media[slot];
+        const kind = slot === 'image2' ? 'image' : slot;
+        if (typeof id === 'string' && id && !kindById.has(id)) kindById.set(id, kind);
+      }
+    }
+    // Same optional extension point as collectMediaRefs, but operating on
+    // RAW (untrusted, pre-sanitize) JSON — see completepicture's own
+    // rawExtraMediaIds for the one type that currently needs this.
+    const type = QUESTION_TYPE_LIST.includes(raw && raw.type) ? QuestionTypes[raw.type] : null;
+    if (type && type.rawExtraMediaIds) {
+      for (const { id, kind } of type.rawExtraMediaIds(raw)) {
+        if (typeof id === 'string' && id && !kindById.has(id)) kindById.set(id, kind);
+      }
     }
   }
   return kindById;
@@ -252,6 +273,10 @@ async function importQuizJson(text) {
     questions: rawQuestions.map(raw => {
       const q = sanitizeQuestion(raw);
       q.media = remapImportedMedia(raw && raw.media, idRemap);
+      // Same optional extension point as above, for a type's own
+      // outside-of-`media` ids (see completepicture's remapExtraMedia).
+      const type = QuestionTypes[q.type];
+      if (type.remapExtraMedia) type.remapExtraMedia(q, raw, idRemap);
       return q;
     }),
   };
