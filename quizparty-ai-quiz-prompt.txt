@@ -1,0 +1,279 @@
+QUIZPARTY QUIZ GENERATOR — INSTRUCTIONS FOR AN AI MODEL
+=========================================================
+
+Paste everything below into an AI chat (ChatGPT, Claude, etc.) along with
+a description of the quiz you want (topic, number of questions, audience,
+difficulty, which question types to use, etc.). The AI should reply with
+ONE valid JSON file matching the exact format below. Save that reply as a
+.json file and import it into QuizParty via: Library -> Import.
+
+=========================================================
+YOUR TASK (give these instructions to the AI)
+=========================================================
+
+Generate a QuizParty quiz as a single JSON object. Output ONLY the raw
+JSON — no markdown code fences, no commentary before or after, no
+trailing commas, no comments. The JSON must be directly loadable with
+JSON.parse().
+
+TOP-LEVEL SHAPE
+----------------
+{
+  "title": "string, the quiz's name",
+  "questions": [ <question object>, <question object>, ... ]
+}
+
+Do not include an "id" field — QuizParty assigns one on import.
+Do not include a top-level "media" field unless you are specifically
+embedding real media (see MEDIA section below) — in almost every case
+you should leave it out entirely.
+
+EVERY QUESTION HAS THESE COMMON FIELDS
+----------------------------------------
+{
+  "type":   one of: "mc" | "tf" | "order" | "typed" | "slider" |
+                     "poll" | "scale" | "wordcloud" | "open" | "imagepin"
+  "text":   the question text, plain string, max 200 characters
+  "time":   seconds on the clock. Use one of: 5, 10, 20, 30, 60, 90
+            (other numbers work but these are the ones the app's own
+            editor UI offers, so stick to them unless told otherwise)
+  "points": "standard" (normal points) | "double" (2x points) |
+            "none" (ungraded / ungraded-by-design types should use this)
+  "media":  { "image": null, "video": null, "audio": null }
+            — leave all three null unless you are embedding real media
+            (see MEDIA section). Do not invent fake ids or URLs here.
+
+  ... plus the type-specific fields listed below, one block per type.
+}
+
+Every question also needs AT LEAST ONE correct answer marked where the
+type has a "correct" concept — see each type's rules below.
+
+=========================================================
+THE 10 QUESTION TYPES — EXACT FIELDS FOR EACH
+=========================================================
+
+1) "mc" — Multiple choice (graded)
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   Rules: 2 to 4 answers. At least 2 must have non-empty text. At least
+   one must have "correct": true. More than one may be correct.
+
+2) "tf" — True / False (graded)
+   "correct": true | false   (true = "True" is the correct answer)
+   No other fields.
+
+3) "order" — Order / puzzle (graded)
+   "items": [ { "text": "string, max 100 chars" }, ... ]
+   Rules: 2 to 6 items. The CORRECT ORDER is simply the order you list
+   them in this array — item 0 must come first, item 1 second, etc.
+
+4) "typed" — Typed answer (graded)
+   "accepted": [ "string, max 100 chars", ... ]
+   Rules: 1 to 10 accepted answers. Matching is case-insensitive and
+   exact after trimming whitespace (no fuzzy matching) — so list every
+   reasonable spelling/phrasing you want accepted, e.g.
+   ["Paris", "paris, france"].
+
+5) "slider" — Slider / numeric (graded)
+   "min": number, "max": number (min must be less than max)
+   "step": number (the slider's increment, e.g. 1, 0.5, 5)
+   "correct": number (must be between min and max)
+   Players are scored within a small automatic tolerance around "correct"
+   — you don't need to add any tolerance yourself.
+
+6) "poll" — Poll (ungraded, shows live distribution; use "points": "none")
+   "options": [ { "text": "string, max 100 chars" }, ... ]
+   Rules: 2 to 6 options. No "correct" concept at all.
+
+7) "scale" — Scale / rating (ungraded; use "points": "none")
+   "min": integer, "max": integer (max - min + 1 must be <= 8)
+   "lowLabel": "string, max 30 chars, optional, e.g. 'Strongly disagree'"
+   "highLabel": "string, max 30 chars, optional, e.g. 'Strongly agree'"
+   No "correct" concept — it just collects a rating distribution.
+
+8) "wordcloud" — Word cloud (ungraded; use "points": "none")
+   No extra fields at all. Players each submit one short word/phrase;
+   the host screen aggregates them into a word cloud.
+
+9) "open" — Open-ended (ungraded; use "points": "none")
+   No extra fields at all. Players each write a free-text response,
+   listed on the host screen for discussion.
+
+10) "imagepin" — Image pin (graded, REQUIRES a real attached image)
+    "pin": { "x": number 0-1, "y": number 0-1 }   <- the correct spot,
+             as a fraction of image width/height (0,0 = top-left,
+             1,1 = bottom-right, 0.5,0.5 = dead center)
+    "tolerance": number 0.01-0.5 (how close counts as correct; 0.08 is
+                 a sensible default — smaller = stricter)
+    IMPORTANT: this type is unanswerable without a real image attached
+    via "media.image" (see MEDIA section). Do not generate an "imagepin"
+    question unless you are also embedding a real image, OR you are
+    explicitly telling the human they must attach one manually in the
+    editor afterward (QuizParty will refuse to host the quiz otherwise).
+
+=========================================================
+MEDIA (images / video / audio) — READ THIS CAREFULLY
+=========================================================
+
+QuizParty quizzes CAN carry embedded images, video, and audio, but an AI
+text model cannot generate real image/video/audio binary data — you
+cannot invent one. There are two honest ways to handle media:
+
+OPTION A (recommended, and the default unless told otherwise):
+Leave every question's "media" as { "image": null, "video": null,
+"audio": null }, generate the quiz text/questions only, and tell the
+human which question(s) they should manually attach media to afterward
+and what kind of image/video/audio would fit well. They attach it inside
+the QuizParty editor itself (an "Image" / "Video" / "Audio" button per
+question, which opens a normal file picker) — no JSON editing needed on
+their end.
+
+OPTION B (only if the human supplies you with an actual small file's
+base64 data, e.g. "here is my logo, base64: iVBORw0KG..."): you may embed
+it directly. If you do, the quiz needs a top-level "media" map alongside
+"questions", and each question's media field points at a key in it:
+
+  {
+    "title": "...",
+    "questions": [
+      {
+        "type": "mc", "text": "...", "time": 20, "points": "standard",
+        "media": { "image": "img1", "video": null, "audio": null },
+        "answers": [...]
+      }
+    ],
+    "media": {
+      "img1": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+    }
+  }
+
+  Rules for Option B:
+  - The media map's keys are arbitrary short ids you invent (e.g. "img1",
+    "clip1") — they just have to match what each question's media field
+    references.
+  - Each value MUST be a proper data: URL (data:<mimetype>;base64,<data>)
+    containing the file's real bytes — never a plain http(s):// link
+    (QuizParty does not fetch remote URLs; everything is embedded).
+  - Size/type limits per kind — anything outside these will be rejected
+    on import, so don't exceed them:
+      image: PNG, JPEG, GIF, or WEBP only, up to 5 MB
+      audio: MP3, OGG, WAV, or WEBM only, up to 15 MB
+      video: MP4, WEBM, or OGG only, up to 50 MB
+  - A question's "media.image"/"media.video"/"media.audio" can each
+    independently be null or a media-map id — a question can have all
+    three, just one, or none.
+
+In practice: for almost every request, use Option A. Only use Option B if
+the human has explicitly pasted you real file data to embed.
+
+=========================================================
+A COMPLETE, VALID EXAMPLE (study this shape closely)
+=========================================================
+
+{
+  "title": "World Geography Basics",
+  "questions": [
+    {
+      "type": "mc",
+      "text": "What is the capital of France?",
+      "time": 20,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "answers": [
+        { "text": "Paris", "correct": true },
+        { "text": "Lyon", "correct": false },
+        { "text": "Marseille", "correct": false },
+        { "text": "Nice", "correct": false }
+      ]
+    },
+    {
+      "type": "tf",
+      "text": "Australia is both a country and a continent.",
+      "time": 10,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "correct": true
+    },
+    {
+      "type": "order",
+      "text": "Order these rivers from longest to shortest.",
+      "time": 30,
+      "points": "double",
+      "media": { "image": null, "video": null, "audio": null },
+      "items": [
+        { "text": "Nile" },
+        { "text": "Amazon" },
+        { "text": "Yangtze" },
+        { "text": "Mississippi" }
+      ]
+    },
+    {
+      "type": "typed",
+      "text": "What is the smallest country in the world by area?",
+      "time": 20,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "accepted": ["Vatican City", "Vatican", "The Vatican"]
+    },
+    {
+      "type": "slider",
+      "text": "What percentage of Earth's surface is covered by water?",
+      "time": 20,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "min": 0, "max": 100, "step": 1, "correct": 71
+    },
+    {
+      "type": "poll",
+      "text": "Which continent would you most like to visit?",
+      "time": 20,
+      "points": "none",
+      "media": { "image": null, "video": null, "audio": null },
+      "options": [
+        { "text": "Africa" }, { "text": "Asia" },
+        { "text": "South America" }, { "text": "Antarctica" }
+      ]
+    },
+    {
+      "type": "scale",
+      "text": "How confident do you feel about world capitals?",
+      "time": 15,
+      "points": "none",
+      "media": { "image": null, "video": null, "audio": null },
+      "min": 1, "max": 5,
+      "lowLabel": "Not confident", "highLabel": "Very confident"
+    },
+    {
+      "type": "wordcloud",
+      "text": "One word you associate with 'ocean'.",
+      "time": 15,
+      "points": "none",
+      "media": { "image": null, "video": null, "audio": null }
+    },
+    {
+      "type": "open",
+      "text": "Describe a place you'd love to travel to and why.",
+      "time": 60,
+      "points": "none",
+      "media": { "image": null, "video": null, "audio": null }
+    }
+  ]
+}
+
+(No "imagepin" question is included here since it needs a real image —
+see the MEDIA section above.)
+
+=========================================================
+HOW TO USE THE AI'S OUTPUT
+=========================================================
+1. Copy the AI's reply (it should be nothing but the JSON).
+2. Save it as a plain text file with a .json extension, e.g. my-quiz.json
+3. In QuizParty: Library -> Import -> select that file.
+4. If it imported successfully it'll appear in your library — click Edit
+   to review/tweak it, attach any media the AI told you to add, or Host
+   it directly.
+5. If import fails, the error message will say why — the most common
+   causes are: missing required fields for a type (see above), a typo in
+   "type" (must exactly match one of the 10 listed), or the AI having
+   added markdown formatting (```json fences) around the JSON that needs
+   to be stripped out first.
