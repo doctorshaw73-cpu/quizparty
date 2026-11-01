@@ -23,7 +23,7 @@ Your quizzes are stored in your browser's localStorage; attached images/audio/vi
 
 - 🎨 Kahoot-style gameplay: colored shape answer controls, countdown timer, speed-based scoring (500–1000 pts), streak bonuses, scoreboard between questions, podium at the end
 - 📵 **Player-privacy by design**: for multiple-choice, true/false, order, poll and scale questions, phones never receive the question or answer text — only shape/color tiles matched to what's shown on the shared screen. The host/projector screen always shows the full question, media, and answer text.
-- 🧩 **Seventeen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, blurred picture, zoomed-in picture, silhouette reveal, puzzle piece reveal, slider/numeric, poll, scale, word cloud, open-ended, and image pin (drop-a-pin on an image)
+- 🧩 **Nineteen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, finish the lyrics, blurred picture, zoomed-in picture, silhouette reveal, puzzle piece reveal, slider/numeric, poll, scale, word cloud, open-ended, image pin (drop-a-pin on an image), and spot the difference (two images, tap what changed)
 - 🖼️ **Local media**: attach an image, video, or audio clip to any question. Media lives in your browser's IndexedDB and is shown on the host screen only — never sent to players, except image-pin's target image, which a phone genuinely needs to answer
 - 🎬 PowerPoint/Slides-style editor: a slide-sorter sidebar with per-type icons, a type picker, time limit and point multiplier per question, and a live host+phone preview of exactly what each screen will show
 - 📱 Players join with a PIN or QR code — nothing to install
@@ -85,6 +85,7 @@ Every question type follows the same rule: **the host screen always shows everyt
 | Word scramble | A text box | Same matching as typed answer; the host screen shows the accepted answer's letters shuffled (word boundaries kept) |
 | Guess the song | A text box | Host plays an attached audio clip (optionally auto-trimmed to a set length); same matching as typed answer; requires an attached audio clip |
 | Guess the sound | A text box | Identical mechanic to guess the song, for a sound effect instead of a song |
+| Finish the lyrics | Colored shape tiles, no text | Host plays an attached audio clip, then players pick the next line from up to 4 answer tiles; same tile grading as multiple choice |
 | Blurred picture | A text box | Host screen shows the attached image starting heavily blurred, smoothly sharpening to fully clear over the question's time limit; same matching as typed answer; requires an attached image |
 | Zoomed-in picture | A text box | Identical mechanic to blurred picture; the host screen instead starts zoomed into an extreme close-up and zooms back out to the full image |
 | Silhouette reveal | A text box | Identical mechanic to blurred picture; the host screen instead starts as a solid black silhouette and fades up to full color |
@@ -95,10 +96,11 @@ Every question type follows the same rule: **the host screen always shows everyt
 | Word cloud | A short text box | Ungraded; responses aggregate into a word cloud on the host screen |
 | Open-ended | A text box | Ungraded; responses are listed on the host screen |
 | Image pin | The question's image, tap to drop a pin | The one type that sends an image to the phone — it can't be answered otherwise |
+| Spot the difference | Both images, tap wherever they differ | Two images shown side by side (same pin/tolerance grading as image pin); sends both images to the phone; requires two attached images of the same size/composition |
 
 ## Local media
 
-Attach an image, video, or audio clip to any question from the editor. Media is stored as a Blob in your browser's IndexedDB (not localStorage, which is too small) and rendered on the host/projector screen only. It's never uploaded anywhere and never sent to players — the sole exception is image-pin questions, where the target image is sent to the phone because the question can't be answered without it.
+Attach an image, video, or audio clip to any question from the editor. Media is stored as a Blob in your browser's IndexedDB (not localStorage, which is too small) and rendered on the host/projector screen only. It's never uploaded anywhere and never sent to players — the exceptions are image-pin and spot-the-difference questions, where the image(s) are sent to the phone because the question can't be answered without them.
 
 ## Embedded video
 

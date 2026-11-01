@@ -32,9 +32,10 @@ EVERY QUESTION HAS THESE COMMON FIELDS
 ----------------------------------------
 {
   "type":   one of: "mc" | "tf" | "order" | "typed" | "scramble" |
-                     "guesssong" | "guesssound" | "blur" | "zoom" |
-                     "silhouette" | "puzzlereveal" | "slider" | "poll" |
-                     "scale" | "wordcloud" | "open" | "imagepin"
+                     "guesssong" | "guesssound" | "finishlyrics" | "blur" |
+                     "zoom" | "silhouette" | "puzzlereveal" | "slider" |
+                     "poll" | "scale" | "wordcloud" | "open" | "imagepin" |
+                     "spotdifference"
   "text":   the question text, plain string, max 200 characters
   "time":   seconds on the clock. Use one of: 5, 10, 20, 30, 60, 90
             (other numbers work but these are the ones the app's own
@@ -44,6 +45,8 @@ EVERY QUESTION HAS THESE COMMON FIELDS
   "media":  { "image": null, "video": null, "audio": null }
             — leave all three null unless you are embedding real media
             (see MEDIA section). Do not invent fake ids or URLs here.
+            "spotdifference" ONLY: also include a 4th key, "image2", for
+            its second image (see that type's entry below).
   "videoEmbed": null, or an object/string embedding an external video
             (YouTube, Facebook, or any other site) — see VIDEO EMBED
             section below. This one you CAN generate confidently without
@@ -56,7 +59,7 @@ Every question also needs AT LEAST ONE correct answer marked where the
 type has a "correct" concept — see each type's rules below.
 
 =========================================================
-THE 17 QUESTION TYPES — EXACT FIELDS FOR EACH
+THE 19 QUESTION TYPES — EXACT FIELDS FOR EACH
 =========================================================
 
 1) "mc" — Multiple choice (graded)
@@ -103,7 +106,19 @@ THE 17 QUESTION TYPES — EXACT FIELDS FOR EACH
    Identical fields/rules to "guesssong" — same mechanic, used for a sound
    effect (an animal, an object, an event) instead of a song.
 
-8) "blur" — Blurred Picture (graded, REQUIRES a real attached image)
+8) "finishlyrics" — Finish the Lyrics (graded, REQUIRES a real attached audio clip)
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   (identical shape/rules to "mc": 2 to 4 answers, at least one "correct")
+   "audioClipSeconds": integer 1-30, optional (null/omitted = play the
+   whole file) — identical meaning to "guesssong"'s field.
+   The host plays the clip with the same "Play clip" button as
+   "guesssong"/"guesssound", then players choose the next line from the
+   answer tiles exactly like "mc" (shape tiles only on the phone, text on
+   the host screen). IMPORTANT: unanswerable without a real audio file
+   attached via "media.audio" (see MEDIA section) — same rule as
+   "guesssong".
+
+9) "blur" — Blurred Picture (graded, REQUIRES a real attached image)
    "accepted": [ "string, max 100 chars", ... ]  (same shape/rules as
    "typed"/"scramble") — players type what the picture shows.
    The host screen shows the attached image starting heavily blurred,
@@ -112,48 +127,48 @@ THE 17 QUESTION TYPES — EXACT FIELDS FOR EACH
    IMPORTANT: unanswerable without a real image attached via
    "media.image" (see MEDIA section) — same rule as "imagepin".
 
-9) "zoom" — Zoomed-In Picture (graded, REQUIRES a real attached image)
+10) "zoom" — Zoomed-In Picture (graded, REQUIRES a real attached image)
    Identical fields/rules to "blur". The host screen instead starts
    zoomed way into the image (an extreme close-up) and smoothly zooms
    back out to the full picture over the question's time limit.
 
-10) "silhouette" — Silhouette Reveal (graded, REQUIRES a real attached image)
+11) "silhouette" — Silhouette Reveal (graded, REQUIRES a real attached image)
    Identical fields/rules to "blur". The host screen instead starts with
    the image as a solid black silhouette and smoothly fades up to full
    brightness/color over the question's time limit.
 
-11) "puzzlereveal" — Puzzle Piece Reveal (graded, REQUIRES a real attached image)
+12) "puzzlereveal" — Puzzle Piece Reveal (graded, REQUIRES a real attached image)
    Identical fields/rules to "blur". The host screen instead covers the
    image with a grid of opaque tiles that disappear one at a time, in a
    random order, timed so the last tile clears right as the question's
    time limit runs out.
 
-12) "slider" — Slider / numeric (graded)
+13) "slider" — Slider / numeric (graded)
    "min": number, "max": number (min must be less than max)
    "step": number (the slider's increment, e.g. 1, 0.5, 5)
    "correct": number (must be between min and max)
    Players are scored within a small automatic tolerance around "correct"
    — you don't need to add any tolerance yourself.
 
-13) "poll" — Poll (ungraded, shows live distribution; use "points": "none")
+14) "poll" — Poll (ungraded, shows live distribution; use "points": "none")
    "options": [ { "text": "string, max 100 chars" }, ... ]
    Rules: 2 to 6 options. No "correct" concept at all.
 
-14) "scale" — Scale / rating (ungraded; use "points": "none")
+15) "scale" — Scale / rating (ungraded; use "points": "none")
    "min": integer, "max": integer (max - min + 1 must be <= 8)
    "lowLabel": "string, max 30 chars, optional, e.g. 'Strongly disagree'"
    "highLabel": "string, max 30 chars, optional, e.g. 'Strongly agree'"
    No "correct" concept — it just collects a rating distribution.
 
-15) "wordcloud" — Word cloud (ungraded; use "points": "none")
+16) "wordcloud" — Word cloud (ungraded; use "points": "none")
    No extra fields at all. Players each submit one short word/phrase;
    the host screen aggregates them into a word cloud.
 
-16) "open" — Open-ended (ungraded; use "points": "none")
+17) "open" — Open-ended (ungraded; use "points": "none")
    No extra fields at all. Players each write a free-text response,
    listed on the host screen for discussion.
 
-17) "imagepin" — Image pin (graded, REQUIRES a real attached image)
+18) "imagepin" — Image pin (graded, REQUIRES a real attached image)
     "pin": { "x": number 0-1, "y": number 0-1 }   <- the correct spot,
              as a fraction of image width/height (0,0 = top-left,
              1,1 = bottom-right, 0.5,0.5 = dead center)
@@ -165,15 +180,27 @@ THE 17 QUESTION TYPES — EXACT FIELDS FOR EACH
     explicitly telling the human they must attach one manually in the
     editor afterward (QuizParty will refuse to host the quiz otherwise).
 
+19) "spotdifference" — Spot the Difference (graded, REQUIRES two real attached images)
+    "pin": { "x": number 0-1, "y": number 0-1 }, "tolerance": number 0.01-0.5
+    (identical meaning/rules to "imagepin"'s fields — a tap on EITHER image
+    within "tolerance" of "pin" counts as correct)
+    The host screen shows TWO images side by side (e.g. a "before" and an
+    "after" that differ in one small way) and players tap wherever they
+    think the two differ. Both images must be the SAME dimensions/
+    composition for the shared (x,y) fraction to land on the same real
+    spot in both. IMPORTANT: requires BOTH "media.image" AND
+    "media.image2" (see MEDIA section's note on this type's extra media
+    key) — unanswerable with only one image attached.
+
 NOT CURRENTLY SUPPORTED — do not invent fields for this: there is no way
 for an answer OPTION itself to be a picture (e.g. "mc"/"poll" choices are
 always text only, never one image per choice, and there's no way to make
 a picture itself the thing a player picks as their answer). Progressive
-image-reveal effects (blur, zoom, silhouette, puzzle-tile) ARE supported
-— see types 8-11 above — but in all of them the image is the PROMPT, and
-the player's answer is still always typed text, never a picture tap/pick
-(except "imagepin", which is a single tap-the-spot-on-the-image type, not
-a multiple-choice-of-images type).
+image-reveal effects (blur, zoom, silhouette, puzzle-tile) and a two-image
+compare ("spotdifference") ARE supported — see types 9-12 and 19 above —
+but in all of them the image(s) are the PROMPT, and the player's answer
+is still always typed text or a tap-the-spot coordinate, never a picture
+tap/pick among several candidate images.
 
 =========================================================
 VIDEO EMBED (YouTube / Facebook / any other site) — THE EASY ONE
@@ -408,12 +435,12 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
   ]
 }
 
-(No "imagepin", "guesssong", "guesssound", "blur", "zoom", "silhouette",
-or "puzzlereveal" question is included here since each needs a real
-attached file (image or audio) — see the MEDIA section above. The last
-question shows a "videoEmbed" — note this is unrelated to "media": a
-video file would go in "media.video", an embedded external video goes
-in "videoEmbed".)
+(No "imagepin", "guesssong", "guesssound", "finishlyrics", "blur", "zoom",
+"silhouette", "puzzlereveal", or "spotdifference" question is included
+here since each needs a real attached file (image or audio) — see the
+MEDIA section above. The last question shows a "videoEmbed" — note this
+is unrelated to "media": a video file would go in "media.video", an
+embedded external video goes in "videoEmbed".)
 
 =========================================================
 HOW TO USE THE AI'S OUTPUT
@@ -426,6 +453,6 @@ HOW TO USE THE AI'S OUTPUT
    it directly.
 5. If import fails, the error message will say why — the most common
    causes are: missing required fields for a type (see above), a typo in
-   "type" (must exactly match one of the 17 listed), or the AI having
+   "type" (must exactly match one of the 19 listed), or the AI having
    added markdown formatting (```json fences) around the JSON that needs
    to be stripped out first.

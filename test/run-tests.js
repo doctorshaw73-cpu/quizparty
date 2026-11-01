@@ -349,10 +349,106 @@ test('blur/zoom/silhouette/puzzlereveal player payloads carry no accepted-answer
   }
 });
 
+test('finishlyrics: validate() requires an attached audio clip and at least 2 answers with one marked correct, same as mc + guesssong', ({ QuestionTypes }) => {
+  const answers = [{ text: 'A', correct: true }, { text: 'B', correct: false }];
+  const noAudio = QuestionTypes.finishlyrics.validate({ answers, media: { image: null, video: null, audio: null } });
+  assert.ok(noAudio.some(p => /audio/i.test(p)), 'finishlyrics without audio should be flagged');
+  const withAudio = QuestionTypes.finishlyrics.validate({ answers, media: { image: null, video: null, audio: 'abc123' } });
+  assert.strictEqual(withAudio.length, 0, 'finishlyrics with audio and a valid correct answer should validate cleanly');
+  const noCorrect = QuestionTypes.finishlyrics.validate({ answers: [{ text: 'A', correct: false }, { text: 'B', correct: false }], media: { image: null, video: null, audio: 'abc123' } });
+  assert.ok(noCorrect.some(p => /correct/i.test(p)), 'finishlyrics with no correct answer marked should be flagged');
+});
+
+test('finishlyrics: isCorrect/sanitizeSubmission/playerPayload behave exactly like mc (shared implementation)', ({ QuestionTypes }) => {
+  const q = { answers: [{ text: 'A', correct: false }, { text: 'B', correct: true }] };
+  assert.strictEqual(QuestionTypes.finishlyrics.isCorrect(q, { c: 1 }), true);
+  assert.strictEqual(QuestionTypes.finishlyrics.isCorrect(q, { c: 0 }), false);
+  assert.strictEqual(QuestionTypes.finishlyrics.isCorrect(q, null), false);
+  jsonEqual(QuestionTypes.finishlyrics.sanitizeSubmission(q, { c: 1 }), { c: 1 });
+  assert.strictEqual(QuestionTypes.finishlyrics.sanitizeSubmission(q, { c: 99 }), null, 'an out-of-range tile index must be rejected, not clamped');
+  assert.strictEqual(QuestionTypes.finishlyrics.sanitizeSubmission(q, { c: 'x' }), null);
+  jsonEqual(QuestionTypes.finishlyrics.playerPayload(q), { count: 2 });
+});
+
+test('finishlyrics: sanitize keeps a valid clip length, drops an invalid one (shared with guesssong/guesssound)', ({ QuestionTypes }) => {
+  const good = QuestionTypes.finishlyrics.sanitize({ answers: [{ text: 'A', correct: true }], audioClipSeconds: 8 });
+  assert.strictEqual(good.audioClipSeconds, 8);
+  const bad = QuestionTypes.finishlyrics.sanitize({ answers: [{ text: 'A', correct: true }], audioClipSeconds: 999 });
+  assert.strictEqual(bad.audioClipSeconds, null);
+});
+
 test('imagepin payload carries the image (the one documented exception)', ({ QuestionTypes }) => {
   const payload = QuestionTypes.imagepin.playerPayload({ tolerance: 0.1 }, { imageDataUrl: 'data:image/png;base64,AAA' });
   assert.strictEqual(payload.image, 'data:image/png;base64,AAA');
   assert.strictEqual(payload.pin, undefined); // the correct location itself must never be sent
+});
+
+test('spotdifference: validate() requires BOTH images, same tap-the-spot grading as imagepin (shared implementation)', ({ QuestionTypes }) => {
+  const q = { pin: { x: 0.3, y: 0.7 }, tolerance: 0.1 };
+  const noImages = QuestionTypes.spotdifference.validate({ ...q, media: { image: null, image2: null, video: null, audio: null } });
+  assert.ok(noImages.some(p => /first image/i.test(p)));
+  assert.ok(noImages.some(p => /second image/i.test(p)));
+  const onlyFirst = QuestionTypes.spotdifference.validate({ ...q, media: { image: 'abc', image2: null, video: null, audio: null } });
+  assert.ok(onlyFirst.some(p => /second image/i.test(p)));
+  assert.ok(!onlyFirst.some(p => /first image/i.test(p)));
+  const both = QuestionTypes.spotdifference.validate({ ...q, media: { image: 'abc', image2: 'def', video: null, audio: null } });
+  assert.strictEqual(both.length, 0);
+
+  // isCorrect/sanitizeSubmission are the exact same pin/tolerance logic as imagepin
+  assert.strictEqual(QuestionTypes.spotdifference.isCorrect(q, { x: 0.3, y: 0.7 }), true);
+  assert.strictEqual(QuestionTypes.spotdifference.isCorrect(q, { x: 0.9, y: 0.1 }), false);
+  assert.strictEqual(QuestionTypes.spotdifference.isCorrect(q, null), false);
+  jsonEqual(QuestionTypes.spotdifference.sanitizeSubmission(q, { x: 0.5, y: 1.5 }), { x: 0.5, y: 1 });
+  assert.strictEqual(QuestionTypes.spotdifference.sanitizeSubmission(q, { x: 'nope', y: 0.5 }), null);
+});
+
+test('spotdifference payload carries BOTH images (like imagepin, but two)', ({ QuestionTypes }) => {
+  const payload = QuestionTypes.spotdifference.playerPayload(
+    { tolerance: 0.1 },
+    { imageDataUrl: 'data:image/png;base64,AAA', image2DataUrl: 'data:image/png;base64,BBB' },
+  );
+  assert.strictEqual(payload.image, 'data:image/png;base64,AAA');
+  assert.strictEqual(payload.image2, 'data:image/png;base64,BBB');
+  assert.strictEqual(payload.pin, undefined); // the correct location itself must never be sent
+});
+
+test('emptyMedia/collectMediaRefs/remapImportedMedia: the image2 slot (spot-the-difference) is tracked exactly like image', (sb) => {
+  jsonEqual(sb.emptyMedia(), { image: null, image2: null, video: null, audio: null });
+  const quiz = {
+    questions: [{ type: 'spotdifference', media: { image: 'id1', image2: 'id2', video: null, audio: null }, pin: { x: 0.5, y: 0.5 }, tolerance: 0.08 }],
+  };
+  const refs = sb.collectMediaRefs(quiz);
+  jsonEqual(refs.map(r => r.id).sort(), ['id1', 'id2']);
+  assert.ok(refs.every(r => r.kind === 'image'));
+  assert.strictEqual(sb.collectMediaIds(quiz).sort().join(','), 'id1,id2');
+
+  const rawQuestions = [{ type: 'spotdifference', media: { image: 'old1', image2: 'old2' } }];
+  const kindById = sb.referencedRawMediaIds(rawQuestions);
+  assert.strictEqual(kindById.get('old1'), 'image');
+  assert.strictEqual(kindById.get('old2'), 'image');
+
+  const remapped = sb.remapImportedMedia({ image: 'old1', image2: 'old2' }, { old1: 'new1', old2: 'new2' });
+  jsonEqual(remapped, { image: 'new1', image2: 'new2', video: null, audio: null });
+});
+
+test('importQuizJson: a spot-the-difference question imports BOTH images (image + image2 slots)', async (sb) => {
+  let saveCount = 0;
+  sb.ctx.saveMediaFromDataUrl = async () => { saveCount++; return 'new-id-' + saveCount; };
+  const raw = {
+    title: 'Spot it',
+    questions: [{
+      type: 'spotdifference', text: 'What changed?', time: 20, points: 'standard',
+      media: { image: 'img1', image2: 'img2' }, pin: { x: 0.4, y: 0.6 }, tolerance: 0.1,
+    }],
+    media: { img1: `data:image/png;base64,${TINY_PNG_BASE64}`, img2: `data:image/png;base64,${TINY_PNG_BASE64}` },
+  };
+  const quiz = await sb.importQuizJson(JSON.stringify(raw));
+  const q = quiz.questions[0];
+  assert.strictEqual(saveCount, 2, 'both images should have been decoded and saved');
+  assert.ok(q.media.image, 'first image should have been imported to a local id');
+  assert.ok(q.media.image2, 'second image should have been imported to a local id');
+  assert.notStrictEqual(q.media.image, q.media.image2);
+  assert.strictEqual(sb.validateQuiz(quiz).length, 0);
 });
 
 /* ---------- store.js: quiz-level validation, normalization, migration ---------- */
@@ -409,7 +505,7 @@ test('migrateQuiz: fills in type/media on legacy questions', (sb) => {
   };
   const migrated = sb.migrateQuiz(legacy);
   assert.strictEqual(migrated.questions[0].type, 'mc');
-  jsonEqual(migrated.questions[0].media, { image: null, video: null, audio: null });
+  jsonEqual(migrated.questions[0].media, { image: null, image2: null, video: null, audio: null });
 });
 
 test('sanitizeQuestion: unknown/malformed input falls back to safe defaults', (sb) => {
@@ -437,10 +533,11 @@ test('getQuizzes seeds a sample quiz on first run, upsert/delete round-trip', (s
   assert.strictEqual(sb.getQuiz(quiz.id), null);
 });
 
-test('QUESTION_TYPE_LIST covers all seventeen required question types', (sb) => {
+test('QUESTION_TYPE_LIST covers all nineteen required question types', (sb) => {
   const expected = [
     'mc', 'tf', 'order', 'typed', 'slider', 'poll', 'scale', 'wordcloud', 'open', 'imagepin',
-    'scramble', 'guesssong', 'guesssound', 'blur', 'zoom', 'silhouette', 'puzzlereveal',
+    'scramble', 'guesssong', 'guesssound', 'blur', 'zoom', 'silhouette', 'puzzlereveal', 'finishlyrics',
+    'spotdifference',
   ];
   assert.deepStrictEqual([...sb.QUESTION_TYPE_LIST].sort(), [...expected].sort());
 });

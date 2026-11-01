@@ -81,7 +81,9 @@ async function edRenderPreview() {
   hostEl.innerHTML = `<div class="q-media">${mediaHtml(media, q.videoEmbed)}</div><h4>${esc(q.text || '(question text)')}</h4><div class="preview-body"></div>`;
   type.hostRender(hostEl.querySelector('.preview-body'), q, media);
 
-  const ctx = type.sendsMediaToPlayer && q.media.image ? { imageDataUrl: await mediaToDataUrl(q.media.image) } : {};
+  const ctx = type.sendsMediaToPlayer
+    ? { imageDataUrl: q.media.image ? await mediaToDataUrl(q.media.image) : null, image2DataUrl: q.media.image2 ? await mediaToDataUrl(q.media.image2) : null }
+    : {};
   const payload = { type: q.type, secs: q.time, ...type.playerPayload(q, ctx) };
   const playerEl = $('#ed-preview-player');
   playerEl.innerHTML = '';

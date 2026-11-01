@@ -2,7 +2,10 @@
 
 const LS_KEY = 'quizparty.quizzes.v1';
 
-function emptyMedia() { return { image: null, video: null, audio: null }; }
+// image2 is only ever used by spot-the-difference (a second image alongside
+// the common `image` slot) — every other type just leaves it null, same as
+// any slot it doesn't use.
+function emptyMedia() { return { image: null, image2: null, video: null, audio: null }; }
 
 function sampleQuiz() {
   const q = (text, answers, correct, time = 20) => ({
@@ -105,8 +108,8 @@ function collectMediaRefs(quiz) {
   const refs = [];
   quiz.questions.forEach(q => {
     if (!q.media) return;
-    for (const kind of ['image', 'video', 'audio']) {
-      if (q.media[kind]) refs.push({ id: q.media[kind], kind });
+    for (const slot of ['image', 'image2', 'video', 'audio']) {
+      if (q.media[slot]) refs.push({ id: q.media[slot], kind: slot === 'image2' ? 'image' : slot });
     }
   });
   return refs;
@@ -188,8 +191,9 @@ function referencedRawMediaIds(rawQuestions) {
   for (const raw of rawQuestions) {
     const media = raw && raw.media;
     if (!media || typeof media !== 'object') continue;
-    for (const kind of ['image', 'video', 'audio']) {
-      const id = media[kind];
+    for (const slot of ['image', 'image2', 'video', 'audio']) {
+      const id = media[slot];
+      const kind = slot === 'image2' ? 'image' : slot;
       if (typeof id === 'string' && id && !kindById.has(id)) kindById.set(id, kind);
     }
   }

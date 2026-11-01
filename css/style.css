@@ -339,6 +339,13 @@ button, input, select, textarea { font: inherit; }
 .puzzle-grid { position: absolute; inset: 0; display: grid; }
 .puzzle-tile { background: #1a1a2e; border: 1px solid rgba(255,255,255,.06); }
 
+/* ---------- finish the lyrics (clip button above the answer tiles) ---------- */
+.finishlyrics-clip { text-align: center; padding: .5rem 0 1rem; }
+
+/* ---------- spot the difference (two images side by side) ---------- */
+.spotdiff-wrap { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; padding: 0 1rem; }
+.spotdiff-wrap .imagepin-wrap { max-width: 47%; }
+
 /* ---------- typed / slider / word cloud / open-ended player controls ---------- */
 .input-control { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 1rem; padding: 1.5rem; }
 .input-control input[type=text], .input-control textarea {
