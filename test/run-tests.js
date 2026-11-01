@@ -35,7 +35,7 @@ function makeLocalStorage() {
    override them on `.ctx` after loading — see loadSandbox(). */
 const EXPORTED_NAMES = [
   'QuestionTypes', 'QUESTION_TYPE_LIST', 'questionTypeOf', 'MAX_TILES', 'SHAPES', 'esc', 'clamp', 'uid',
-  'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc',
+  'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc', 'clipCoverDelaySec', 'CLIP_SEEK_PROVIDERS',
   'safeText', 'safeBool', 'safeNumber', 'safeRows',
   'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'TYPED_MAX_ACCEPTED',
   'validateQuiz', 'normalizeQuiz', 'blankQuestion', 'retypeQuestion', 'migrateQuiz', 'sanitizeQuestion',
@@ -1178,6 +1178,48 @@ test('buildEmbedSrc: youtube includes start/end params, facebook uses the offici
   // a claimed provider that doesn't match what the ref actually re-detects
   // as must never be trusted into building that provider's URL shape
   assert.strictEqual(buildEmbedSrc({ provider: 'facebook', ref: 'https://youtu.be/dQw4w9WgXcQ' }), null);
+});
+
+test('parseVideoEmbed/buildEmbedSrc: Vimeo is detected and gets a real seek-to-start via Vimeo\'s own #t= fragment', ({ parseVideoEmbed, buildEmbedSrc }) => {
+  jsonEqual(parseVideoEmbed('https://vimeo.com/76979871'), { provider: 'vimeo', ref: '76979871' });
+  jsonEqual(parseVideoEmbed('https://player.vimeo.com/video/76979871'), { provider: 'vimeo', ref: '76979871' });
+
+  const withStart = buildEmbedSrc({ provider: 'vimeo', ref: '76979871', start: 45 });
+  assert.ok(withStart.startsWith('https://player.vimeo.com/video/76979871?'));
+  assert.ok(withStart.endsWith('#t=45s'));
+
+  const noStart = buildEmbedSrc({ provider: 'vimeo', ref: '76979871', start: null });
+  assert.ok(!noStart.includes('#t='), 'no start set -> no seek fragment at all');
+});
+
+test('sanitizeVideoEmbed: drops start/end entirely for a provider that can\'t actually seek, even if valid values were supplied', ({ sanitizeVideoEmbed, CLIP_SEEK_PROVIDERS }) => {
+  jsonEqual(CLIP_SEEK_PROVIDERS, ['youtube', 'vimeo']);
+
+  const fb = sanitizeVideoEmbed({ provider: 'facebook', ref: 'https://www.facebook.com/x/videos/1/', start: 10, end: 20 });
+  assert.strictEqual(fb.start, undefined, 'facebook cannot seek — a submitted start/end must not be silently kept and later shown as if it meant something');
+  assert.strictEqual(fb.end, undefined);
+
+  const custom = sanitizeVideoEmbed({ provider: 'custom', ref: 'https://frontend.vh.yandex.ru/player/abc123', start: 10, end: 20 });
+  assert.strictEqual(custom.start, undefined);
+  assert.strictEqual(custom.end, undefined);
+
+  // youtube and vimeo DO keep valid start/end — this isn't a blanket drop
+  const yt = sanitizeVideoEmbed({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 10, end: 20 });
+  assert.strictEqual(yt.start, 10);
+  assert.strictEqual(yt.end, 20);
+});
+
+test('clipCoverDelaySec: accounts for the seek offset so the cover fires when the intended clip LENGTH has played, not at the raw end timestamp; never applies to youtube (which halts itself) or a non-seekable provider', ({ clipCoverDelaySec }) => {
+  // vimeo seeks to start=45, so what's on screen is (45 + elapsed) — the
+  // cover must fire after (90-45)=45s of display, not at the raw end=90
+  assert.strictEqual(clipCoverDelaySec({ provider: 'vimeo', ref: '1', start: 45, end: 90 }), 45);
+  // no start set -> plays from 0:00, so the cover fires at the raw end
+  assert.strictEqual(clipCoverDelaySec({ provider: 'vimeo', ref: '1', start: null, end: 30 }), 30);
+  // youtube halts itself via its own `end` param — no generic cover needed
+  assert.strictEqual(clipCoverDelaySec({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 10, end: 20 }), null);
+  // no end at all -> nothing to cover
+  assert.strictEqual(clipCoverDelaySec({ provider: 'vimeo', ref: '1', start: 10, end: null }), null);
+  assert.strictEqual(clipCoverDelaySec(null), null);
 });
 
 test('mediaHtml: embeds a valid videoEmbed as an iframe, re-validating rather than trusting the caller', ({ ctx }) => {

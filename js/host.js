@@ -42,6 +42,7 @@ class HostGame {
     this.destroyed = false;
     this.preloadTimeoutMs = PRELOAD_TIMEOUT_MS;
     this.pendingReady = null;  // { qIndex, pending: Set<connectionId>, resolve }
+    this.clipCoverTimer = null;
   }
 
   /* ---------- room / connections ---------- */
@@ -218,6 +219,25 @@ class HostGame {
 
   renderHostMedia(elId, media, videoEmbed) {
     $('#' + elId).innerHTML = mediaHtml(media, videoEmbed);
+    this.scheduleClipCover(elId, videoEmbed);
+  }
+
+  /* Some embed providers (see js/util.js's CLIP_SEEK_PROVIDERS) have no
+     documented way to halt their own playback at a chosen end time — the
+     best this app can honestly do without loading that platform's own JS
+     SDK (a tradeoff deliberately not taken; see README "Embedded video")
+     is cover the iframe here once the intended clip length has elapsed.
+     The underlying page may keep playing behind the cover, muted and
+     hidden, but the audience sees a clean stop. youtube is excluded here
+     since its own `end` URL param already halts the player for real. */
+  scheduleClipCover(elId, videoEmbed) {
+    if (this.clipCoverTimer) { clearTimeout(this.clipCoverTimer); this.clipCoverTimer = null; }
+    const delaySec = clipCoverDelaySec(videoEmbed);
+    if (delaySec === null) return;
+    this.clipCoverTimer = setTimeout(() => {
+      const embedEl = $(`#${elId} .q-media-embed`);
+      if (embedEl) embedEl.outerHTML = '<div class="q-media-embed-ended">Clip ended</div>';
+    }, delaySec * 1000);
   }
 
   /* ---------- lobby ---------- */
@@ -431,6 +451,7 @@ class HostGame {
   destroy() {
     this.destroyed = true;
     clearInterval(this.ticker);
+    clearTimeout(this.clipCoverTimer);
     if (this.pendingReady) this.pendingReady.resolve();
     if (this.peer) this.peer.destroy();
   }

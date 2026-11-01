@@ -60,10 +60,14 @@ function edRenderMediaPreview() {
   $('#ed-embed-url').value = v ? v.ref : '';
   $('#ed-embed-start').value = v && Number.isInteger(v.start) ? v.start : '';
   $('#ed-embed-end').value = v && Number.isInteger(v.end) ? v.end : '';
-  $('#ed-embed-hint').textContent = v && v.provider === 'youtube' ? 'YouTube — start/end trim a clip.'
-    : v && v.provider === 'facebook' ? 'Facebook video — start/end aren’t supported by Facebook’s player and are ignored.'
-    : v && v.provider === 'custom' ? 'Embedded as-is — start/end aren’t applied for an unrecognized site.'
-    : 'Paste a YouTube or Facebook video URL, or any other site’s own embeddable URL (e.g. its "Share → Embed" link).';
+  $('#ed-embed-hint').textContent = v && v.provider === 'youtube' ? 'YouTube — start/end trim a real clip; playback halts itself at End.'
+    : v && v.provider === 'vimeo' ? 'Vimeo — Start seeks to that point; End covers the screen once the clip length has played (Vimeo has no way to halt itself, so the video may keep running hidden behind the cover).'
+    : v && v.provider === 'facebook' ? 'Facebook — can’t seek or trim at all; the full video always plays from its own beginning.'
+    : v && v.provider === 'custom' ? 'This site can’t seek or trim either — the full video plays from its own beginning. (If its own share link already includes a start time, pasting that may help.)'
+    : 'Paste a YouTube or Vimeo URL for real clip trimming, a Facebook video URL, or any other site’s own embeddable URL (e.g. its "Share → Embed" link).';
+  const seekable = v && CLIP_SEEK_PROVIDERS.includes(v.provider);
+  $('#ed-embed-start').disabled = !seekable;
+  $('#ed-embed-end').disabled = !seekable;
   resolveMediaUrls(q.media).then(urls => { $('#ed-media-preview').innerHTML = mediaHtml(urls, q.videoEmbed); });
 }
 

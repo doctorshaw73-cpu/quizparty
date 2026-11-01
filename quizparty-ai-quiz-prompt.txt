@@ -127,20 +127,26 @@ video files), which really does need real file bytes you can't invent.
 
   "videoEmbed": { "provider": "youtube", "ref": "dQw4w9WgXcQ", "start": 30, "end": 90 }
 
-  "provider": "youtube" | "facebook" | "custom"
+  "provider": "youtube" | "vimeo" | "facebook" | "custom"
     - "youtube": "ref" is the 11-character video id (from a URL like
       youtube.com/watch?v=<id> or youtu.be/<id>). "start"/"end" (seconds,
-      integers, optional) trim it to just a clip — reliable, documented
-      YouTube behavior.
+      integers, optional) trim it to just a clip, and playback halts
+      itself at "end" — reliable, documented YouTube behavior.
+    - "vimeo": "ref" is the numeric video id (from vimeo.com/<id>).
+      "start" really does seek to that point (Vimeo's own documented
+      #t= link format). "end" covers the screen once the clip length has
+      elapsed, but can't make the underlying Vimeo player actually stop —
+      good enough for the audience, not a true pause.
     - "facebook": "ref" is the full Facebook video page URL. Facebook has
-      no documented way to trim a clip, so don't bother setting
-      start/end for it — they're ignored.
+      no documented way to seek OR trim at all — don't set start/end for
+      it, they're dropped entirely rather than silently doing nothing.
     - "custom": "ref" is the real embeddable URL for ANY other site
-      (Vimeo, Yandex, etc.) — typically what that site's own
-      "Share -> Embed" feature gives you. Only use this if you (or the
-      human) actually have that real URL; never invent one. start/end are
-      ignored (no standardized way to trim an arbitrary unknown
-      platform's embed).
+      (Yandex, etc.) — typically what that site's own "Share -> Embed"
+      feature gives you. Only use this if you (or the human) actually
+      have that real URL; never invent one. start/end are dropped for
+      this provider too (no standardized way to seek/trim an arbitrary
+      unknown platform's embed) — the full video always plays from its
+      own beginning.
 
   A plain string also works in place of the object (the app detects the
   provider itself) — simplest when you don't need clip trimming:
