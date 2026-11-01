@@ -321,6 +321,15 @@ button, input, select, textarea { font: inherit; }
 }
 .tile-list-row .shape { width: 34px; height: 34px; border-radius: 6px; flex: none; color: #fff; display: flex; align-items: center; justify-content: center; }
 
+/* ---------- word scramble (host reveal of the scrambled letters) ---------- */
+.scramble-letters { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; padding: 0 1rem; }
+.scramble-letter {
+  width: 2.6rem; height: 2.6rem; border-radius: 8px; background: rgba(255,255,255,.94);
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.4rem;
+  box-shadow: 0 3px 8px rgba(0,0,0,.25);
+}
+.scramble-space { width: 1.2rem; flex: none; }
+
 /* ---------- typed / slider / word cloud / open-ended player controls ---------- */
 .input-control { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 1rem; padding: 1.5rem; }
 .input-control input[type=text], .input-control textarea {

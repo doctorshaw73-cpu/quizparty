@@ -23,7 +23,7 @@ Your quizzes are stored in your browser's localStorage; attached images/audio/vi
 
 - 🎨 Kahoot-style gameplay: colored shape answer controls, countdown timer, speed-based scoring (500–1000 pts), streak bonuses, scoreboard between questions, podium at the end
 - 📵 **Player-privacy by design**: for multiple-choice, true/false, order, poll and scale questions, phones never receive the question or answer text — only shape/color tiles matched to what's shown on the shared screen. The host/projector screen always shows the full question, media, and answer text.
-- 🧩 **Ten question types**: multiple choice, true/false, order/puzzle, typed answer, slider/numeric, poll, scale, word cloud, open-ended, and image pin (drop-a-pin on an image)
+- 🧩 **Thirteen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, slider/numeric, poll, scale, word cloud, open-ended, and image pin (drop-a-pin on an image)
 - 🖼️ **Local media**: attach an image, video, or audio clip to any question. Media lives in your browser's IndexedDB and is shown on the host screen only — never sent to players, except image-pin's target image, which a phone genuinely needs to answer
 - 🎬 PowerPoint/Slides-style editor: a slide-sorter sidebar with per-type icons, a type picker, time limit and point multiplier per question, and a live host+phone preview of exactly what each screen will show
 - 📱 Players join with a PIN or QR code — nothing to install
@@ -82,6 +82,9 @@ Every question type follows the same rule: **the host screen always shows everyt
 | True / False | ✓ / ✗ tiles | |
 | Order / puzzle | Colored shape tiles, tapped in sequence | Correct order = the order items are listed in the editor |
 | Typed answer | A text box | Case-insensitive match against one or more accepted answers |
+| Word scramble | A text box | Same matching as typed answer; the host screen shows the accepted answer's letters shuffled (word boundaries kept) |
+| Guess the song | A text box | Host plays an attached audio clip (optionally auto-trimmed to a set length); same matching as typed answer; requires an attached audio clip |
+| Guess the sound | A text box | Identical mechanic to guess the song, for a sound effect instead of a song |
 | Slider / numeric | A range slider (min/max only, no correct value) | Scored within a small tolerance |
 | Poll | Colored shape tiles, no text | Ungraded — just shows the distribution |
 | Scale | Numbered tiles (e.g. 1–5) | Ungraded rating/Likert-style question |

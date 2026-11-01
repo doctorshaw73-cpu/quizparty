@@ -66,6 +66,160 @@ function safeTileIndex(raw, count) {
   return Number.isInteger(c) && c >= 0 && c < count ? { c } : null;
 }
 
+/* ---------- shared "type an answer, matched against an accepted list"
+   behavior — used by typed, scramble, guesssong, and guesssound. Every
+   one of these is, underneath, "show the player a text box; match
+   case-insensitively against one or more accepted strings"; only what's
+   shown on the HOST screen (plain prompt, scrambled letters, or an audio
+   clip) actually differs between them. */
+
+function acceptedAnswerSanitize(raw) {
+  return {
+    accepted: (Array.isArray(raw && raw.accepted) ? raw.accepted : [])
+      .slice(0, TYPED_MAX_ACCEPTED).map(a => safeText(a, 100)),
+  };
+}
+
+function acceptedAnswerValidate(q) {
+  return q.accepted.filter(a => a.trim()).length < 1 ? ['needs at least one accepted answer'] : [];
+}
+
+function acceptedAnswerNormalize(q) {
+  return { ...q, accepted: q.accepted.filter(a => a.trim()) };
+}
+
+function acceptedAnswerIsCorrect(q, s) {
+  if (!s || typeof s.text !== 'string') return false;
+  const norm = s.text.trim().toLowerCase();
+  return norm !== '' && q.accepted.some(a => a.trim().toLowerCase() === norm);
+}
+
+// 60 matches the phone's own <input maxlength="60"> — never trust that
+// control alone, since a modified client can send anything.
+function acceptedAnswerSanitizeSubmission(q, raw) {
+  return (raw && typeof raw.text === 'string') ? { text: raw.text.trim().slice(0, 60) } : null;
+}
+
+// Called as `type.hostReveal(...)`, so `this` resolves to whichever
+// registry entry it's shared by — `this.isCorrect` always means that
+// entry's own isCorrect, even though this one function body is reused
+// across several types.
+function acceptedAnswerHostReveal(el, q, players) {
+  const rows = players.filter(p => p.submission).map(p => `
+    <div class="response-row ${this.isCorrect(q, p.submission) ? 'good' : ''}">${esc(p.name)}: <b>${esc(p.submission.text || '')}</b></div>`).join('');
+  el.innerHTML = `<p class="on-dark" style="text-align:center">Accepted: ${q.accepted.map(esc).join(', ')}</p><div class="response-list">${rows || '<p class="muted">No answers submitted.</p>'}</div>`;
+}
+
+function acceptedAnswerPlayerControl(el, payload, submit) {
+  el.className = 'input-control';
+  el.innerHTML = `<input type="text" id="pc-typed" maxlength="60" placeholder="Type your answer…" autocomplete="off">
+    <button type="button" class="btn primary big full" id="pc-typed-go">Submit</button>`;
+  const send = fireOnce(() => submit({ text: el.querySelector('#pc-typed').value }));
+  el.querySelector('#pc-typed-go').addEventListener('click', send);
+  el.querySelector('#pc-typed').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
+}
+
+// Renders just the accepted-answer-list editor UI into `el` — callers that
+// need more (guesssong/guesssound's clip-length field) append their own
+// markup/wiring after calling this.
+function acceptedAnswerEditorRender(el, q, onChange) {
+  const rows = q.accepted.map(a => ({ text: a }));
+  el.innerHTML = `<p class="muted hint">Accepted answers (case-insensitive, any one matches):</p>
+    <div class="rows">${editRowsHtml(rows, { checkbox: false, min: 1, placeholder: i => `Accepted answer ${i + 1}` })}</div>
+    <button type="button" class="btn full" data-act="add">+ Add accepted answer</button>`;
+  el.querySelector('.rows').addEventListener('input', e => {
+    const row = e.target.closest('.ans-row');
+    if (row) q.accepted[+row.dataset.i] = e.target.value;
+    onChange();
+  });
+  el.querySelector('.rows').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-act="rm"]');
+    if (btn) { q.accepted.splice(+btn.closest('.ans-row').dataset.i, 1); onChange(true); }
+  });
+  el.querySelector('[data-act="add"]').addEventListener('click', () => { q.accepted.push(''); onChange(true); });
+}
+
+/* Scrambles each word's letters independently (keeping word count/spacing
+   visible, same convention as other Kahoot-style word-scramble features) —
+   words of length <= 1 are left as-is, and a word that happens to shuffle
+   back to itself is reshuffled once (best-effort; not worth looping
+   forever over a 2-letter word where that's the only other arrangement). */
+function scrambleWords(text) {
+  const shuffle = word => {
+    const letters = word.split('');
+    for (let i = letters.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [letters[i], letters[j]] = [letters[j], letters[i]];
+    }
+    return letters.join('');
+  };
+  return text.split(' ').map(word => {
+    if (word.length <= 1) return word;
+    let scrambled = shuffle(word);
+    if (scrambled === word) scrambled = shuffle(word);
+    return scrambled;
+  }).join(' ');
+}
+
+const AUDIO_CLIP_MAX_SEC = 30;
+
+function sanitizeClipSeconds(raw) {
+  const n = safeNumber(raw, null);
+  return n !== null && Number.isInteger(n) && n >= 1 && n <= AUDIO_CLIP_MAX_SEC ? n : null;
+}
+
+/* guesssong/guesssound: identical mechanic (attach an audio clip, players
+   type what they heard), differing only in label/icon/placeholder
+   wording — a shared factory avoids maintaining two near-duplicate
+   registry entries by hand. Audio is REQUIRED, like image-pin requires an
+   image: the question is unanswerable without it. */
+function makeAudioGuessType(label, icon, prompt) {
+  return {
+    label, icon, graded: true,
+    defaults: () => ({ accepted: [''], audioClipSeconds: null }),
+    sanitize: raw => ({ ...acceptedAnswerSanitize(raw), audioClipSeconds: sanitizeClipSeconds(raw && raw.audioClipSeconds) }),
+    validate(q) {
+      const problems = acceptedAnswerValidate(q);
+      if (!q.media || !q.media.audio) problems.push('needs an audio clip uploaded');
+      return problems;
+    },
+    normalize: q => ({ ...acceptedAnswerNormalize(q), audioClipSeconds: q.audioClipSeconds }),
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    hostRender(el, q, media) {
+      el.className = '';
+      if (!media || !media.audioUrl) { el.innerHTML = `<p class="muted" style="text-align:center">${icon} Audio unavailable.</p>`; return; }
+      const clipNote = q.audioClipSeconds ? ` (first ${q.audioClipSeconds}s)` : '';
+      el.innerHTML = `<p class="muted" style="text-align:center">${prompt}${clipNote}</p>
+        <button type="button" class="btn primary big qh-play-clip">▶ Play clip</button>`;
+      el.querySelector('.qh-play-clip').addEventListener('click', e => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        const audio = new Audio(media.audioUrl);
+        audio.play().catch(() => {}); // host interaction just happened — a play() rejection here is non-actionable
+        if (q.audioClipSeconds) setTimeout(() => audio.pause(), q.audioClipSeconds * 1000);
+        audio.addEventListener('ended', () => { btn.disabled = false; });
+        setTimeout(() => { btn.disabled = false; }, (q.audioClipSeconds || 9999) * 1000 + 300);
+      });
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender(el, q, onChange) {
+      acceptedAnswerEditorRender(el, q, onChange);
+      const clipRow = document.createElement('div');
+      clipRow.className = 'q-opts';
+      clipRow.innerHTML = `<label>Clip length in seconds (optional — blank plays the whole file)
+        <input type="number" id="qt-clipsec" min="1" max="${AUDIO_CLIP_MAX_SEC}" step="1" value="${q.audioClipSeconds || ''}"></label>`;
+      el.appendChild(clipRow);
+      el.querySelector('#qt-clipsec').addEventListener('change', e => {
+        q.audioClipSeconds = e.target.value === '' ? null : sanitizeClipSeconds(+e.target.value);
+        onChange();
+      });
+    },
+  };
+}
+
 /* ---------- shared row editor (answers / options / items / accepted) ---------- */
 function editRowsHtml(rows, opts) {
   return rows.map((r, i) => `
@@ -271,54 +425,53 @@ const QuestionTypes = {
   typed: {
     label: 'Typed answer', icon: '⌨️', graded: true,
     defaults: () => ({ accepted: [''] }),
-    sanitize: raw => ({
-      accepted: (Array.isArray(raw && raw.accepted) ? raw.accepted : [])
-        .slice(0, TYPED_MAX_ACCEPTED).map(a => safeText(a, 100)),
-    }),
-    validate(q) {
-      return q.accepted.filter(a => a.trim()).length < 1 ? ['needs at least one accepted answer'] : [];
-    },
-    normalize: q => ({ ...q, accepted: q.accepted.filter(a => a.trim()) }),
+    sanitize: acceptedAnswerSanitize,
+    validate: acceptedAnswerValidate,
+    normalize: acceptedAnswerNormalize,
     playerPayload: () => ({}),
-    isCorrect(q, s) {
-      if (!s || typeof s.text !== 'string') return false;
-      const norm = s.text.trim().toLowerCase();
-      return norm !== '' && q.accepted.some(a => a.trim().toLowerCase() === norm);
-    },
-    // 60 matches the phone's own <input maxlength="60"> — never trust that
-    // control alone, since a modified client can send anything.
-    sanitizeSubmission: (q, raw) => (raw && typeof raw.text === 'string') ? { text: raw.text.trim().slice(0, 60) } : null,
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
     hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">⌨️ Players are typing their answer on their phones…</p>`; },
-    hostReveal(el, q, players) {
-      const rows = players.filter(p => p.submission).map(p => `
-        <div class="response-row ${this.isCorrect(q, p.submission) ? 'good' : ''}">${esc(p.name)}: <b>${esc(p.submission.text || '')}</b></div>`).join('');
-      el.innerHTML = `<p class="on-dark" style="text-align:center">Accepted: ${q.accepted.map(esc).join(', ')}</p><div class="response-list">${rows || '<p class="muted">No answers submitted.</p>'}</div>`;
-    },
-    playerControl(el, payload, submit) {
-      el.className = 'input-control';
-      el.innerHTML = `<input type="text" id="pc-typed" maxlength="60" placeholder="Type your answer…" autocomplete="off">
-        <button type="button" class="btn primary big full" id="pc-typed-go">Submit</button>`;
-      const send = fireOnce(() => submit({ text: el.querySelector('#pc-typed').value }));
-      el.querySelector('#pc-typed-go').addEventListener('click', send);
-      el.querySelector('#pc-typed').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-    },
-    editorRender(el, q, onChange) {
-      const rows = q.accepted.map((a, i) => ({ text: a }));
-      el.innerHTML = `<p class="muted hint">Accepted answers (case-insensitive, any one matches):</p>
-        <div class="rows">${editRowsHtml(rows, { checkbox: false, min: 1, placeholder: i => `Accepted answer ${i + 1}` })}</div>
-        <button type="button" class="btn full" data-act="add">+ Add accepted answer</button>`;
-      el.querySelector('.rows').addEventListener('input', e => {
-        const row = e.target.closest('.ans-row');
-        if (row) q.accepted[+row.dataset.i] = e.target.value;
-        onChange();
-      });
-      el.querySelector('.rows').addEventListener('click', e => {
-        const btn = e.target.closest('button[data-act="rm"]');
-        if (btn) { q.accepted.splice(+btn.closest('.ans-row').dataset.i, 1); onChange(true); }
-      });
-      el.querySelector('[data-act="add"]').addEventListener('click', () => { q.accepted.push(''); onChange(true); });
-    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
   },
+
+  /* ================= word scramble ================= */
+  scramble: {
+    label: 'Word Scramble', icon: '🔤', graded: true,
+    defaults: () => ({ accepted: [''] }),
+    sanitize: acceptedAnswerSanitize,
+    validate: acceptedAnswerValidate,
+    normalize: acceptedAnswerNormalize,
+    playerPayload: () => ({}),
+    isCorrect: acceptedAnswerIsCorrect,
+    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    // Scrambled fresh on every call rather than cached — hostRender is only
+    // ever called once per live question (see js/host.js startQuestion),
+    // so this never re-shuffles mid-question; the harmless exception is
+    // the editor's own live preview, which may re-shuffle as the host
+    // types the answer, which is fine since it's not a real game.
+    hostRender(el, q) {
+      el.className = '';
+      const word = (q.accepted[0] || '').trim();
+      if (!word) { el.innerHTML = `<p class="muted" style="text-align:center">🔤 Add an accepted answer to scramble.</p>`; return; }
+      const scrambled = scrambleWords(word.toUpperCase());
+      el.innerHTML = `<p class="muted" style="text-align:center">🔤 Unscramble:</p>
+        <div class="scramble-letters">${scrambled.split('').map(ch => ch === ' '
+          ? '<span class="scramble-space"></span>'
+          : `<span class="scramble-letter">${esc(ch)}</span>`).join('')}</div>`;
+    },
+    hostReveal: acceptedAnswerHostReveal,
+    playerControl: acceptedAnswerPlayerControl,
+    editorRender: acceptedAnswerEditorRender,
+  },
+
+  /* ================= guess the song ================= */
+  guesssong: makeAudioGuessType('Guess the Song', '🎵', '🎵 Players are listening for the song…'),
+
+  /* ================= guess the sound ================= */
+  guesssound: makeAudioGuessType('Guess the Sound', '🔊', '🔊 Players are listening for the sound…'),
 
   /* ================= slider / numeric ================= */
   slider: {

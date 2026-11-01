@@ -31,8 +31,9 @@ you should leave it out entirely.
 EVERY QUESTION HAS THESE COMMON FIELDS
 ----------------------------------------
 {
-  "type":   one of: "mc" | "tf" | "order" | "typed" | "slider" |
-                     "poll" | "scale" | "wordcloud" | "open" | "imagepin"
+  "type":   one of: "mc" | "tf" | "order" | "typed" | "scramble" |
+                     "guesssong" | "guesssound" | "slider" | "poll" |
+                     "scale" | "wordcloud" | "open" | "imagepin"
   "text":   the question text, plain string, max 200 characters
   "time":   seconds on the clock. Use one of: 5, 10, 20, 30, 60, 90
             (other numbers work but these are the ones the app's own
@@ -54,7 +55,7 @@ Every question also needs AT LEAST ONE correct answer marked where the
 type has a "correct" concept — see each type's rules below.
 
 =========================================================
-THE 10 QUESTION TYPES — EXACT FIELDS FOR EACH
+THE 13 QUESTION TYPES — EXACT FIELDS FOR EACH
 =========================================================
 
 1) "mc" — Multiple choice (graded)
@@ -78,32 +79,55 @@ THE 10 QUESTION TYPES — EXACT FIELDS FOR EACH
    reasonable spelling/phrasing you want accepted, e.g.
    ["Paris", "paris, france"].
 
-5) "slider" — Slider / numeric (graded)
+5) "scramble" — Word Scramble (graded)
+   "accepted": [ "string, max 100 chars", ... ]  (identical shape/rules to
+   "typed" above, including the phrasing-variants trick)
+   The host screen automatically shuffles the FIRST accepted answer's
+   letters (word boundaries/spacing are kept, so a multi-word answer still
+   shows as separate scrambled words) — you don't generate the scrambled
+   form yourself, the app does it. Pick a short, single-concept answer
+   (one word or a short phrase) — a long sentence makes a messy scramble.
+
+6) "guesssong" — Guess the Song (graded, REQUIRES a real attached audio clip)
+   "accepted": [ "string, max 100 chars", ... ]  (same shape/rules as "typed")
+   "audioClipSeconds": integer 1-30, optional (null/omitted = play the
+   whole file). The host clicks a "Play clip" button that plays the
+   attached audio, auto-stopping after this many seconds if set.
+   IMPORTANT: unanswerable without a real audio file attached via
+   "media.audio" (see MEDIA section) — same rule as "imagepin" needing an
+   image. Do not generate this type unless you're also embedding real
+   audio, or are explicitly telling the human to attach a clip afterward.
+
+7) "guesssound" — Guess the Sound (graded, REQUIRES a real attached audio clip)
+   Identical fields/rules to "guesssong" — same mechanic, used for a sound
+   effect (an animal, an object, an event) instead of a song.
+
+8) "slider" — Slider / numeric (graded)
    "min": number, "max": number (min must be less than max)
    "step": number (the slider's increment, e.g. 1, 0.5, 5)
    "correct": number (must be between min and max)
    Players are scored within a small automatic tolerance around "correct"
    — you don't need to add any tolerance yourself.
 
-6) "poll" — Poll (ungraded, shows live distribution; use "points": "none")
+9) "poll" — Poll (ungraded, shows live distribution; use "points": "none")
    "options": [ { "text": "string, max 100 chars" }, ... ]
    Rules: 2 to 6 options. No "correct" concept at all.
 
-7) "scale" — Scale / rating (ungraded; use "points": "none")
+10) "scale" — Scale / rating (ungraded; use "points": "none")
    "min": integer, "max": integer (max - min + 1 must be <= 8)
    "lowLabel": "string, max 30 chars, optional, e.g. 'Strongly disagree'"
    "highLabel": "string, max 30 chars, optional, e.g. 'Strongly agree'"
    No "correct" concept — it just collects a rating distribution.
 
-8) "wordcloud" — Word cloud (ungraded; use "points": "none")
+11) "wordcloud" — Word cloud (ungraded; use "points": "none")
    No extra fields at all. Players each submit one short word/phrase;
    the host screen aggregates them into a word cloud.
 
-9) "open" — Open-ended (ungraded; use "points": "none")
+12) "open" — Open-ended (ungraded; use "points": "none")
    No extra fields at all. Players each write a free-text response,
    listed on the host screen for discussion.
 
-10) "imagepin" — Image pin (graded, REQUIRES a real attached image)
+13) "imagepin" — Image pin (graded, REQUIRES a real attached image)
     "pin": { "x": number 0-1, "y": number 0-1 }   <- the correct spot,
              as a fraction of image width/height (0,0 = top-left,
              1,1 = bottom-right, 0.5,0.5 = dead center)
@@ -114,6 +138,13 @@ THE 10 QUESTION TYPES — EXACT FIELDS FOR EACH
     question unless you are also embedding a real image, OR you are
     explicitly telling the human they must attach one manually in the
     editor afterward (QuizParty will refuse to host the quiz otherwise).
+
+NOT CURRENTLY SUPPORTED — do not invent fields for these: there is no way
+for an answer OPTION itself to be a picture (e.g. "mc"/"poll" choices are
+always text only, never one image per choice), and there is no built-in
+progressive image-reveal effect (blur-in, zoom-out, tile-by-tile reveal,
+silhouette, etc.) — "imagepin" is the only type that shows an image to
+players at all, and it's shown as a plain static image to tap on.
 
 =========================================================
 VIDEO EMBED (YouTube / Facebook / any other site) — THE EASY ONE
@@ -283,6 +314,14 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
       "accepted": ["Vatican City", "Vatican", "The Vatican"]
     },
     {
+      "type": "scramble",
+      "text": "Unscramble the name of this famous French landmark.",
+      "time": 20,
+      "points": "standard",
+      "media": { "image": null, "video": null, "audio": null },
+      "accepted": ["Eiffel Tower"]
+    },
+    {
       "type": "slider",
       "text": "What percentage of Earth's surface is covered by water?",
       "time": 20,
@@ -340,10 +379,11 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
   ]
 }
 
-(No "imagepin" question is included here since it needs a real image —
-see the MEDIA section above. The last question shows a "videoEmbed" —
-note this is unrelated to "media": a video file would go in
-"media.video", an embedded external video goes in "videoEmbed".)
+(No "imagepin", "guesssong", or "guesssound" question is included here
+since each needs a real attached file (image or audio) — see the MEDIA
+section above. The last question shows a "videoEmbed" — note this is
+unrelated to "media": a video file would go in "media.video", an
+embedded external video goes in "videoEmbed".)
 
 =========================================================
 HOW TO USE THE AI'S OUTPUT

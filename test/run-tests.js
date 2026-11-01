@@ -37,7 +37,7 @@ const EXPORTED_NAMES = [
   'QuestionTypes', 'QUESTION_TYPE_LIST', 'questionTypeOf', 'MAX_TILES', 'SHAPES', 'esc', 'clamp', 'uid',
   'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc', 'clipCoverDelaySec', 'CLIP_SEEK_PROVIDERS',
   'safeText', 'safeBool', 'safeNumber', 'safeRows',
-  'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'TYPED_MAX_ACCEPTED',
+  'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'TYPED_MAX_ACCEPTED', 'scrambleWords', 'sanitizeClipSeconds', 'AUDIO_CLIP_MAX_SEC',
   'validateQuiz', 'normalizeQuiz', 'blankQuestion', 'retypeQuestion', 'migrateQuiz', 'sanitizeQuestion',
   'getQuizzes', 'saveQuizzes', 'getQuiz', 'upsertQuiz', 'deleteQuiz', 'newQuiz', 'emptyMedia', 'collectMediaIds',
   'importQuizJson', 'exportQuiz', 'referencedRawMediaIds', 'importMedia', 'remapImportedMedia', 'MAX_IMPORT_QUESTIONS',
@@ -262,6 +262,68 @@ test('typed/slider/wordcloud/open player payloads carry no accepted-answer data'
   assert.strictEqual(sliderPayload.correct, undefined);
 });
 
+test('scramble/guesssong/guesssound player payloads carry no accepted-answer data (the unscrambled word, or what to listen for, never reaches the phone)', ({ QuestionTypes }) => {
+  jsonEqual(QuestionTypes.scramble.playerPayload({ accepted: ['elephant'] }, {}), {});
+  jsonEqual(QuestionTypes.guesssong.playerPayload({ accepted: ['bohemian rhapsody'] }, {}), {});
+  jsonEqual(QuestionTypes.guesssound.playerPayload({ accepted: ['thunder'] }, {}), {});
+});
+
+test('scrambleWords: same letters, same word count/spacing, actually shuffled, never leaves a multi-letter word unscrambled', ({ scrambleWords }) => {
+  for (let i = 0; i < 20; i++) {
+    const result = scrambleWords('HELLO WORLD');
+    const words = result.split(' ');
+    assert.strictEqual(words.length, 2, 'word count/spacing must be preserved');
+    assert.strictEqual(words[0].split('').sort().join(''), 'EHLLO', 'same letters, just reordered');
+    assert.strictEqual(words[1].split('').sort().join(''), 'DLORW', 'same letters, just reordered');
+  }
+  assert.strictEqual(scrambleWords('A I'), 'A I', 'single-letter words are left as-is (nothing to scramble)');
+  assert.strictEqual(scrambleWords(''), '', 'empty input is handled without throwing');
+});
+
+test('sanitizeClipSeconds: accepts 1-30 integer seconds, rejects/nulls everything else', ({ sanitizeClipSeconds, AUDIO_CLIP_MAX_SEC }) => {
+  assert.strictEqual(AUDIO_CLIP_MAX_SEC, 30);
+  assert.strictEqual(sanitizeClipSeconds(10), 10);
+  assert.strictEqual(sanitizeClipSeconds(1), 1);
+  assert.strictEqual(sanitizeClipSeconds(30), 30);
+  assert.strictEqual(sanitizeClipSeconds(31), null);
+  assert.strictEqual(sanitizeClipSeconds(0), null);
+  assert.strictEqual(sanitizeClipSeconds(-5), null);
+  assert.strictEqual(sanitizeClipSeconds(5.5), null);
+  assert.strictEqual(sanitizeClipSeconds(NaN), null);
+  assert.strictEqual(sanitizeClipSeconds('10'), 10, 'a numeric string coerces, same as the rest of this codebase\'s untrusted-input helpers');
+  assert.strictEqual(sanitizeClipSeconds('not a number'), null);
+  assert.strictEqual(sanitizeClipSeconds(null), null);
+  assert.strictEqual(sanitizeClipSeconds(undefined), null);
+});
+
+test('guesssong/guesssound: validate() requires an attached audio clip, same precedent as image-pin requiring an image', ({ QuestionTypes }) => {
+  for (const type of ['guesssong', 'guesssound']) {
+    const noAudio = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: null } });
+    assert.ok(noAudio.some(p => /audio/i.test(p)), `${type} without audio should be flagged`);
+    const withAudio = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: 'abc123' } });
+    assert.strictEqual(withAudio.length, 0, `${type} with audio and an accepted answer should validate cleanly`);
+  }
+});
+
+test('guesssong/guesssound: sanitize keeps a valid clip length, drops an invalid one', ({ QuestionTypes }) => {
+  const good = QuestionTypes.guesssong.sanitize({ accepted: ['Song'], audioClipSeconds: 8 });
+  assert.strictEqual(good.audioClipSeconds, 8);
+  const bad = QuestionTypes.guesssound.sanitize({ accepted: ['Sound'], audioClipSeconds: 999 });
+  assert.strictEqual(bad.audioClipSeconds, null);
+});
+
+test('scramble/guesssong/guesssound: isCorrect and sanitizeSubmission behave exactly like typed (shared implementation)', ({ QuestionTypes }) => {
+  for (const type of ['scramble', 'guesssong', 'guesssound']) {
+    const q = { accepted: ['Elephant', 'elephant seal'] };
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'ELEPHANT' }), true, `${type} should match case-insensitively`);
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'giraffe' }), false);
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, null), false);
+    jsonEqual(QuestionTypes[type].sanitizeSubmission(q, { text: '  Elephant  ' }), { text: 'Elephant' });
+    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { text: 123 }), null, 'a non-string submission must be rejected, not coerced');
+    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, {}), null);
+  }
+});
+
 test('imagepin payload carries the image (the one documented exception)', ({ QuestionTypes }) => {
   const payload = QuestionTypes.imagepin.playerPayload({ tolerance: 0.1 }, { imageDataUrl: 'data:image/png;base64,AAA' });
   assert.strictEqual(payload.image, 'data:image/png;base64,AAA');
@@ -350,8 +412,11 @@ test('getQuizzes seeds a sample quiz on first run, upsert/delete round-trip', (s
   assert.strictEqual(sb.getQuiz(quiz.id), null);
 });
 
-test('QUESTION_TYPE_LIST covers all ten required question types', (sb) => {
-  const expected = ['mc', 'tf', 'order', 'typed', 'slider', 'poll', 'scale', 'wordcloud', 'open', 'imagepin'];
+test('QUESTION_TYPE_LIST covers all thirteen required question types', (sb) => {
+  const expected = [
+    'mc', 'tf', 'order', 'typed', 'slider', 'poll', 'scale', 'wordcloud', 'open', 'imagepin',
+    'scramble', 'guesssong', 'guesssound',
+  ];
   assert.deepStrictEqual([...sb.QUESTION_TYPE_LIST].sort(), [...expected].sort());
 });
 
