@@ -10,7 +10,7 @@
        relayUrl at a deployed Cloudflare Worker.
    See relay/README.md for how to deploy a relay and fill in the URL below. */
 
-const QUIZPARTY_DEFAULT_RELAY_URL = 'https://REPLACE-ME.workers.dev';
+const QUIZPARTY_DEFAULT_RELAY_URL = 'https://quizparty-relay.doctorshaw73.workers.dev';
 const QUIZPARTY_DEFAULT_PLAYER_URL = 'https://doctorshaw73-cpu.github.io/quizparty/player.html';
 
 function getTransportConfig() {

@@ -15,7 +15,7 @@ const { contextBridge } = require('electron');
    after following the "GitHub Pages" section of the root README. Until
    both are filled in, hosting will fail with a clear "could not reach the
    relay" error rather than silently doing the wrong thing. */
-const RELAY_URL = process.env.QUIZPARTY_RELAY_URL || 'https://REPLACE-ME.workers.dev';
+const RELAY_URL = process.env.QUIZPARTY_RELAY_URL || 'https://quizparty-relay.doctorshaw73.workers.dev';
 const PLAYER_URL = process.env.QUIZPARTY_PLAYER_URL || 'https://doctorshaw73-cpu.github.io/quizparty/player.html';
 /* The env var overrides exist solely so this can be smoke-tested against a
    local `wrangler dev` relay without editing the constants above — the
