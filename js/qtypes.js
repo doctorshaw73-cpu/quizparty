@@ -28,12 +28,39 @@
      hostReveal(el, q, players, media)   -> fills the host's reveal body
      playerControl(el, payload, submit)  -> renders the phone control; submit(data) once
      editorRender(el, q, onChange)       -> renders/wires type-specific editor fields
+
+     Three more are OPTIONAL, only implemented by a type that keeps media
+     ids somewhere other than the common `media` object (currently just
+     completepicture's per-option images) or needs to send players more
+     than the common `media.image`/`image2` (currently also just
+     completepicture's option images) — every other type leaves all three
+     undefined and js/store.js/host.js/editor.js skip them entirely:
+     extraMediaRefs(q)                   -> extra [{id, kind}] for a SANITIZED
+                                             question — js/store.js
+                                             collectMediaRefs calls this for
+                                             IndexedDB GC and export
+     rawExtraMediaIds(raw)               -> same, but for RAW untrusted import
+                                             JSON — js/store.js
+                                             referencedRawMediaIds calls this
+                                             so import knows which ids are
+                                             safe to decode
+     remapExtraMedia(q, raw, idRemap)    -> mutates q in place, filling in the
+                                             post-import local ids (mirrors
+                                             what remapImportedMedia does for
+                                             q.media) — called once by
+                                             js/store.js importQuizJson
+     buildPlayerCtx(q)                   -> extra async ctx fields merged into
+                                             what js/host.js/editor.js resolve
+                                             for sendsMediaToPlayer types
    }
    `media` on the host side is { imageUrl, videoUrl, audioUrl } object URLs for
    the question's optional illustrative attachment (see js/host.js renderHostMedia) —
-   nothing here sends that attachment to players. The one exception is
-   image-pin, which needs its image on the phone to be usable at all; it opts
-   in via `sendsMediaToPlayer` and receives a data: URL through `ctx.imageDataUrl`. */
+   nothing here sends that attachment to players. The exceptions are
+   image-pin and spot-the-difference, which need their image(s) on the phone
+   to be usable at all (via ctx.imageDataUrl/image2DataUrl), and
+   complete-the-picture, whose answer OPTIONS are themselves images (via
+   ctx.optionImages, built by its own buildPlayerCtx above) — all three opt
+   in via `sendsMediaToPlayer`. */
 
 const ORDER_MAX = 6;
 const POLL_MAX = 6;
@@ -1070,6 +1097,134 @@ const QuestionTypes = {
       wireUpload('#qt-img2', 'image2');
       el.querySelector('#qt-tol').addEventListener('input', e => { q.tolerance = Number(e.target.value); onChange(); });
       renderPreview();
+    },
+  },
+
+  /* ================= complete the picture ================= */
+  // The one type whose answer OPTIONS are themselves images rather than
+  // text: the main picture (the common q.media.image slot, shown to the
+  // host/player like any other type's illustrative image) plus up to 4
+  // candidate "piece" images, graded by tile index exactly like mc. The
+  // option images live in their own q.options[].image ids, OUTSIDE the
+  // common `media` object — the only type that needs the optional
+  // extraMediaRefs/rawExtraMediaIds/remapExtraMedia/buildPlayerCtx hooks
+  // (see the registry contract comment at the top of this file) so
+  // IndexedDB GC, export/import, and sending them to players all still
+  // work through the normal generic machinery.
+  completepicture: {
+    label: 'Complete the Picture', icon: '🧩', graded: true, sendsMediaToPlayer: true,
+    defaults: () => ({ options: [{ image: null, correct: false }, { image: null, correct: false }, { image: null, correct: false }, { image: null, correct: false }] }),
+    // Image ids are deliberately left null here, same as media.image/
+    // image2 — they're filled in by remapExtraMedia() once import knows
+    // which ids are safe (see js/store.js importQuizJson).
+    sanitize(raw) {
+      const rows = Array.isArray(raw && raw.options) ? raw.options : [];
+      return { options: rows.slice(0, 4).map(r => ({ image: null, correct: safeBool(r && r.correct, false) })) };
+    },
+    validate(q) {
+      const problems = [];
+      if (!q.media || !q.media.image) problems.push('needs a main image uploaded');
+      const filled = (q.options || []).filter(o => o.image);
+      if (filled.length < 2) problems.push('needs at least 2 answer-option images');
+      if (!filled.some(o => o.correct)) problems.push('has no correct answer-option image marked');
+      return problems;
+    },
+    normalize: q => ({ ...q, options: (q.options || []).filter(o => o.image) }),
+    playerPayload: (q, ctx) => ({ image: ctx.imageDataUrl, optionImages: ctx.optionImages }),
+    isCorrect: (q, s) => !!s && Number.isInteger(s.c) && !!q.options[s.c] && !!q.options[s.c].correct,
+    sanitizeSubmission: (q, raw) => safeTileIndex(raw, q.options.length),
+    extraMediaRefs: q => (q.options || []).filter(o => o.image).map(o => ({ id: o.image, kind: 'image' })),
+    rawExtraMediaIds: raw => (Array.isArray(raw && raw.options) ? raw.options : []).slice(0, 4)
+      .map(r => ({ id: r && r.image, kind: 'image' })).filter(r => typeof r.id === 'string' && r.id),
+    remapExtraMedia(q, raw, idRemap) {
+      const rawRows = Array.isArray(raw && raw.options) ? raw.options : [];
+      q.options.forEach((opt, i) => {
+        const oldId = rawRows[i] && rawRows[i].image;
+        opt.image = (typeof oldId === 'string' && idRemap[oldId]) ? idRemap[oldId] : null;
+      });
+    },
+    async buildPlayerCtx(q) {
+      const optionImages = await Promise.all((q.options || []).map(o => o.image ? mediaToDataUrl(o.image) : null));
+      return { optionImages };
+    },
+    hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">🧩 Players are choosing the missing piece on their phones…</p>`; },
+    // Option image URLs aren't in the `media` param (that only covers the
+    // common media.image/image2/video/audio slots) — resolved here instead,
+    // directly from each option's own stored id, same functions (getMediaUrl)
+    // every other type's editorRender already uses for its own previews.
+    // Guarded by document.contains(el): the host may have moved on to a
+    // different question by the time these (already-local, near-instant)
+    // IndexedDB lookups resolve.
+    hostReveal(el, q, players) {
+      el.innerHTML = '<p class="muted" style="text-align:center">Loading option images…</p>';
+      Promise.all((q.options || []).map(o => o.image ? getMediaUrl(o.image) : null)).then(urls => {
+        if (!document.contains(el)) return;
+        const counts = q.options.map((_, k) => players.filter(p => p.submission && p.submission.c === k).length);
+        const max = Math.max(1, ...counts);
+        el.innerHTML = `
+          <div class="histo">${counts.map((c, k) => `
+            <div class="bar-wrap"><span class="bar-count">${c}</span>
+              <div class="bar c${k}" style="height:${Math.round(120 * c / max) + 6}px"></div>
+              <span class="bar-shape">${SHAPES[k]}${q.options[k].correct ? ' ✓' : ''}</span></div>`).join('')}</div>
+          <div class="option-img-grid">${q.options.map((o, k) => `
+            <div class="option-img-tile c${k} ${o.correct ? '' : 'faded'}">
+              ${urls[k] ? `<img src="${urls[k]}" alt="">` : ''}
+              <span class="shape">${SHAPES[k]}</span>${o.correct ? '<span class="mark">✓</span>' : ''}
+            </div>`).join('')}</div>`;
+      });
+    },
+    playerControl(el, payload, submit) {
+      el.className = 'completepicture-control';
+      const mainImg = payload.image ? `<div class="imagepin-wrap" style="cursor:default"><img src="${payload.image}" alt=""></div>` : '';
+      const options = (payload.optionImages || []).map((url, k) => `
+        <button type="button" class="option-img-tile c${k}" data-c="${k}">
+          ${url ? `<img src="${url}" alt="">` : ''}
+          <span class="shape">${SHAPES[k]}</span>
+        </button>`).join('');
+      el.innerHTML = `${mainImg}<div class="option-img-grid player">${options}</div>`;
+      const send = fireOnce(c => submit({ c }));
+      el.addEventListener('click', e => {
+        const btn = e.target.closest('button[data-c]');
+        if (btn) send(+btn.dataset.c);
+      });
+    },
+    editorRender(el, q, onChange) {
+      el.innerHTML = `<p class="muted hint">Main image: use the "🖼️ Image" button above. Up to 4 candidate "piece" images below — tick the checkbox on every correct one (at least one):</p>
+        <div class="rows">${q.options.map((o, i) => `
+          <div class="ans-row" data-i="${i}">
+            <div class="ans-swatch c${i}">${SHAPES[i]}</div>
+            <div class="opt-img-preview" id="opt-preview-${i}"></div>
+            <input type="file" accept="image/*" class="opt-img-input" data-i="${i}">
+            <input type="checkbox" title="Correct answer" ${o.correct ? 'checked' : ''} class="opt-img-correct" data-i="${i}">
+          </div>`).join('')}</div>`;
+      const renderPreviews = async () => {
+        for (let i = 0; i < q.options.length; i++) {
+          const wrap = el.querySelector(`#opt-preview-${i}`);
+          if (!wrap) continue;
+          wrap.innerHTML = q.options[i].image ? `<img src="${await getMediaUrl(q.options[i].image)}" alt="">` : '<span class="muted">No image</span>';
+        }
+      };
+      el.querySelectorAll('.opt-img-input').forEach(input => {
+        input.addEventListener('change', async e => {
+          const i = +e.target.dataset.i;
+          const file = e.target.files[0];
+          if (!file) return;
+          const error = validateMediaFile(file, 'image');
+          if (error) { alert(error); e.target.value = ''; return; }
+          const oldId = q.options[i].image;
+          q.options[i].image = await saveMedia(file);
+          onChange();
+          renderPreviews();
+          await releaseMediaIfUnused(oldId);
+        });
+      });
+      el.querySelectorAll('.opt-img-correct').forEach(cb => {
+        cb.addEventListener('change', e => {
+          q.options[+e.target.dataset.i].correct = e.target.checked;
+          onChange();
+        });
+      });
+      renderPreviews();
     },
   },
 };

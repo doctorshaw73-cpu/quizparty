@@ -82,7 +82,11 @@ async function edRenderPreview() {
   type.hostRender(hostEl.querySelector('.preview-body'), q, media);
 
   const ctx = type.sendsMediaToPlayer
-    ? { imageDataUrl: q.media.image ? await mediaToDataUrl(q.media.image) : null, image2DataUrl: q.media.image2 ? await mediaToDataUrl(q.media.image2) : null }
+    ? {
+        imageDataUrl: q.media.image ? await mediaToDataUrl(q.media.image) : null,
+        image2DataUrl: q.media.image2 ? await mediaToDataUrl(q.media.image2) : null,
+        ...(type.buildPlayerCtx ? await type.buildPlayerCtx(q) : {}),
+      }
     : {};
   const payload = { type: q.type, secs: q.time, ...type.playerPayload(q, ctx) };
   const playerEl = $('#ed-preview-player');
@@ -121,9 +125,13 @@ function initEditorEvents() {
     edSave(); edRenderTabs(); edRenderQuestion();
   });
 
-  $('#ed-qtype').addEventListener('change', e => {
-    edQuiz.questions[edIndex] = retypeQuestion(edQuiz.questions[edIndex], e.target.value);
+  $('#ed-qtype').addEventListener('change', async e => {
+    const oldQ = edQuiz.questions[edIndex];
+    const oldType = questionTypeOf(oldQ);
+    const extraIds = oldType.extraMediaRefs ? oldType.extraMediaRefs(oldQ).map(r => r.id) : [];
+    edQuiz.questions[edIndex] = retypeQuestion(oldQ, e.target.value);
     edSave(); edRenderTabs(); edRenderQuestion();
+    await releaseUnusedMedia(extraIds);
   });
 
   $('#ed-qtext').addEventListener('input', e => {
@@ -173,7 +181,9 @@ function initEditorEvents() {
     edSave(); edRenderTabs(); edRenderQuestion();
   });
   $('#ed-qdel').addEventListener('click', async () => {
-    const oldIds = Object.values(edQuiz.questions[edIndex].media || {});
+    const delQ = edQuiz.questions[edIndex];
+    const delType = questionTypeOf(delQ);
+    const oldIds = [...Object.values(delQ.media || {}), ...(delType.extraMediaRefs ? delType.extraMediaRefs(delQ).map(r => r.id) : [])];
     if (edQuiz.questions.length === 1) {
       edQuiz.questions[0] = blankQuestion('mc');
     } else {

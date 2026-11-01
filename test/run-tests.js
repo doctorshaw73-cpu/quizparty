@@ -451,6 +451,98 @@ test('importQuizJson: a spot-the-difference question imports BOTH images (image 
   assert.strictEqual(sb.validateQuiz(quiz).length, 0);
 });
 
+test('completepicture: validate() requires the main image, at least 2 option images, and one marked correct', ({ QuestionTypes }) => {
+  const opts = (n, correctAt) => Array.from({ length: n }, (_, i) => ({ image: 'img' + i, correct: i === correctAt }));
+  const noMain = QuestionTypes.completepicture.validate({ options: opts(2, 0), media: { image: null, video: null, audio: null } });
+  assert.ok(noMain.some(p => /main image/i.test(p)));
+  const tooFewOptions = QuestionTypes.completepicture.validate({ options: [{ image: 'img0', correct: true }], media: { image: 'main', video: null, audio: null } });
+  assert.ok(tooFewOptions.some(p => /at least 2/i.test(p)));
+  const noCorrect = QuestionTypes.completepicture.validate({ options: opts(2, -1), media: { image: 'main', video: null, audio: null } });
+  assert.ok(noCorrect.some(p => /no correct/i.test(p)));
+  const good = QuestionTypes.completepicture.validate({ options: opts(3, 1), media: { image: 'main', video: null, audio: null } });
+  assert.strictEqual(good.length, 0);
+});
+
+test('completepicture: isCorrect/sanitizeSubmission grade by option index exactly like mc', ({ QuestionTypes }) => {
+  const q = { options: [{ image: 'a', correct: false }, { image: 'b', correct: true }] };
+  assert.strictEqual(QuestionTypes.completepicture.isCorrect(q, { c: 1 }), true);
+  assert.strictEqual(QuestionTypes.completepicture.isCorrect(q, { c: 0 }), false);
+  assert.strictEqual(QuestionTypes.completepicture.isCorrect(q, null), false);
+  jsonEqual(QuestionTypes.completepicture.sanitizeSubmission(q, { c: 1 }), { c: 1 });
+  assert.strictEqual(QuestionTypes.completepicture.sanitizeSubmission(q, { c: 99 }), null);
+  assert.strictEqual(QuestionTypes.completepicture.sanitizeSubmission(q, { c: 'x' }), null);
+});
+
+test('completepicture: player payload carries the main image and option images, never the correct flags', ({ QuestionTypes }) => {
+  const payload = QuestionTypes.completepicture.playerPayload(
+    { options: [{ image: 'a', correct: true }, { image: 'b', correct: false }] },
+    { imageDataUrl: 'data:image/png;base64,MAIN', optionImages: ['data:image/png;base64,A', 'data:image/png;base64,B'] },
+  );
+  assert.strictEqual(payload.image, 'data:image/png;base64,MAIN');
+  jsonEqual(payload.optionImages, ['data:image/png;base64,A', 'data:image/png;base64,B']);
+  assert.strictEqual(payload.options, undefined); // the correct flags themselves must never be sent
+});
+
+test('completepicture: extraMediaRefs/rawExtraMediaIds/remapExtraMedia track option images outside the common media object', ({ QuestionTypes }) => {
+  const q = { options: [{ image: 'id1', correct: true }, { image: null, correct: false }, { image: 'id2', correct: false }] };
+  const refs = QuestionTypes.completepicture.extraMediaRefs(q);
+  jsonEqual(refs.map(r => r.id).sort(), ['id1', 'id2']);
+  assert.ok(refs.every(r => r.kind === 'image'));
+
+  const raw = { options: [{ image: 'old1' }, { image: null }, { image: 'old2' }] };
+  const rawRefs = QuestionTypes.completepicture.rawExtraMediaIds(raw);
+  jsonEqual(rawRefs.map(r => r.id).sort(), ['old1', 'old2']);
+
+  const q2 = { options: [{ image: null, correct: true }, { image: null, correct: false }, { image: null, correct: false }] };
+  QuestionTypes.completepicture.remapExtraMedia(q2, raw, { old1: 'new1', old2: 'new2' });
+  jsonEqual(q2.options.map(o => o.image), ['new1', null, 'new2']);
+});
+
+test('store.js collectMediaRefs/referencedRawMediaIds include a completepicture question\'s option images via the generic extraMediaRefs/rawExtraMediaIds hooks', (sb) => {
+  const quiz = {
+    questions: [{
+      type: 'completepicture', media: { image: 'main', image2: null, video: null, audio: null },
+      options: [{ image: 'opt1', correct: true }, { image: 'opt2', correct: false }],
+    }],
+  };
+  const refs = sb.collectMediaRefs(quiz);
+  jsonEqual(refs.map(r => r.id).sort(), ['main', 'opt1', 'opt2']);
+
+  const rawQuestions = [{ type: 'completepicture', media: { image: 'main' }, options: [{ image: 'opt1' }, { image: 'opt2' }] }];
+  const kindById = sb.referencedRawMediaIds(rawQuestions);
+  assert.strictEqual(kindById.get('main'), 'image');
+  assert.strictEqual(kindById.get('opt1'), 'image');
+  assert.strictEqual(kindById.get('opt2'), 'image');
+});
+
+test('importQuizJson: a complete-the-picture question imports the main image AND every option image', async (sb) => {
+  let saveCount = 0;
+  sb.ctx.saveMediaFromDataUrl = async () => { saveCount++; return 'new-id-' + saveCount; };
+  const raw = {
+    title: 'Complete it',
+    questions: [{
+      type: 'completepicture', text: 'Which piece fits?', time: 20, points: 'standard',
+      media: { image: 'main' },
+      options: [{ image: 'opt1', correct: true }, { image: 'opt2', correct: false }],
+    }],
+    media: {
+      main: `data:image/png;base64,${TINY_PNG_BASE64}`,
+      opt1: `data:image/png;base64,${TINY_PNG_BASE64}`,
+      opt2: `data:image/png;base64,${TINY_PNG_BASE64}`,
+    },
+  };
+  const quiz = await sb.importQuizJson(JSON.stringify(raw));
+  const q = quiz.questions[0];
+  assert.strictEqual(saveCount, 3, 'the main image and both option images should have been decoded and saved');
+  assert.ok(q.media.image);
+  assert.ok(q.options[0].image);
+  assert.ok(q.options[1].image);
+  assert.notStrictEqual(q.options[0].image, q.options[1].image);
+  assert.strictEqual(q.options[0].correct, true);
+  assert.strictEqual(q.options[1].correct, false);
+  assert.strictEqual(sb.validateQuiz(quiz).length, 0);
+});
+
 /* ---------- store.js: quiz-level validation, normalization, migration ---------- */
 
 test('validateQuiz: flags missing title and per-question problems', (sb) => {
@@ -533,11 +625,11 @@ test('getQuizzes seeds a sample quiz on first run, upsert/delete round-trip', (s
   assert.strictEqual(sb.getQuiz(quiz.id), null);
 });
 
-test('QUESTION_TYPE_LIST covers all nineteen required question types', (sb) => {
+test('QUESTION_TYPE_LIST covers all twenty required question types', (sb) => {
   const expected = [
     'mc', 'tf', 'order', 'typed', 'slider', 'poll', 'scale', 'wordcloud', 'open', 'imagepin',
     'scramble', 'guesssong', 'guesssound', 'blur', 'zoom', 'silhouette', 'puzzlereveal', 'finishlyrics',
-    'spotdifference',
+    'spotdifference', 'completepicture',
   ];
   assert.deepStrictEqual([...sb.QUESTION_TYPE_LIST].sort(), [...expected].sort());
 });

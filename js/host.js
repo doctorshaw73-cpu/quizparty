@@ -216,7 +216,8 @@ class HostGame {
     if (!type.sendsMediaToPlayer) return {};
     const imageDataUrl = q.media && q.media.image ? await mediaToDataUrl(q.media.image) : null;
     const image2DataUrl = q.media && q.media.image2 ? await mediaToDataUrl(q.media.image2) : null;
-    return { imageDataUrl, image2DataUrl };
+    const extra = type.buildPlayerCtx ? await type.buildPlayerCtx(q) : {};
+    return { imageDataUrl, image2DataUrl, ...extra };
   }
 
   renderHostMedia(elId, media, videoEmbed) {

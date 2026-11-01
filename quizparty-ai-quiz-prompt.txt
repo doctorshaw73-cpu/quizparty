@@ -35,7 +35,7 @@ EVERY QUESTION HAS THESE COMMON FIELDS
                      "guesssong" | "guesssound" | "finishlyrics" | "blur" |
                      "zoom" | "silhouette" | "puzzlereveal" | "slider" |
                      "poll" | "scale" | "wordcloud" | "open" | "imagepin" |
-                     "spotdifference"
+                     "spotdifference" | "completepicture"
   "text":   the question text, plain string, max 200 characters
   "time":   seconds on the clock. Use one of: 5, 10, 20, 30, 60, 90
             (other numbers work but these are the ones the app's own
@@ -46,7 +46,11 @@ EVERY QUESTION HAS THESE COMMON FIELDS
             — leave all three null unless you are embedding real media
             (see MEDIA section). Do not invent fake ids or URLs here.
             "spotdifference" ONLY: also include a 4th key, "image2", for
-            its second image (see that type's entry below).
+            its second image (see that type's entry below). This "media"
+            field is always just the ONE main image/video/audio block —
+            "completepicture"'s own answer-option images are a separate
+            "options" array (see that type's entry below), not part of
+            "media" at all.
   "videoEmbed": null, or an object/string embedding an external video
             (YouTube, Facebook, or any other site) — see VIDEO EMBED
             section below. This one you CAN generate confidently without
@@ -59,7 +63,7 @@ Every question also needs AT LEAST ONE correct answer marked where the
 type has a "correct" concept — see each type's rules below.
 
 =========================================================
-THE 19 QUESTION TYPES — EXACT FIELDS FOR EACH
+THE 20 QUESTION TYPES — EXACT FIELDS FOR EACH
 =========================================================
 
 1) "mc" — Multiple choice (graded)
@@ -192,15 +196,36 @@ THE 19 QUESTION TYPES — EXACT FIELDS FOR EACH
     "media.image2" (see MEDIA section's note on this type's extra media
     key) — unanswerable with only one image attached.
 
-NOT CURRENTLY SUPPORTED — do not invent fields for this: there is no way
-for an answer OPTION itself to be a picture (e.g. "mc"/"poll" choices are
-always text only, never one image per choice, and there's no way to make
-a picture itself the thing a player picks as their answer). Progressive
-image-reveal effects (blur, zoom, silhouette, puzzle-tile) and a two-image
-compare ("spotdifference") ARE supported — see types 9-12 and 19 above —
-but in all of them the image(s) are the PROMPT, and the player's answer
-is still always typed text or a tap-the-spot coordinate, never a picture
-tap/pick among several candidate images.
+20) "completepicture" — Complete the Picture (graded, REQUIRES a main image
+    PLUS at least 2 answer-option images)
+    "options": [ { "image": "SEE BELOW", "correct": true|false }, ... ]
+    Rules: up to 4 options. Each needs its own real attached image (see
+    below) — unlike every other type's "options"/"answers" arrays, there
+    is NO "text" field here at all; the picture itself IS the answer. At
+    least 2 options must end up with a real image attached, and at least
+    one of those must be "correct": true.
+    The host screen shows the main image (via the common "media.image"
+    field — see MEDIA section) as the prompt ("which piece completes
+    this picture?"); players are shown the SAME main image plus all the
+    option images as tappable tiles and pick one.
+    IMPORTANT — media for THIS type specifically works differently from
+    every other type: you cannot embed real option images yourself (see
+    MEDIA section's Option A/B) because there is currently no way to
+    express MULTIPLE distinct images for one question's "options" array
+    in this prompt format. Always generate "options" as
+    [ { "image": null, "correct": true|false }, ... ] (2 to 4 entries,
+    "image" always null) and tell the human they must attach the main
+    image AND every option's own image manually in the editor afterward
+    — QuizParty will refuse to host the quiz until they do.
+
+NOT CURRENTLY SUPPORTED — do not invent fields for anything else: outside
+of "completepicture" above, there is still no way for an answer OPTION
+itself to be a picture (e.g. "mc"/"poll" choices are always text only).
+Progressive image-reveal effects (blur, zoom, silhouette, puzzle-tile) and
+a two-image compare ("spotdifference") are also supported — see types
+9-12 and 19 above — but in those, the image(s) are the PROMPT, and the
+player's answer is still always typed text or a tap-the-spot coordinate,
+never a picture tap/pick among several candidate images.
 
 =========================================================
 VIDEO EMBED (YouTube / Facebook / any other site) — THE EASY ONE
@@ -436,11 +461,11 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
 }
 
 (No "imagepin", "guesssong", "guesssound", "finishlyrics", "blur", "zoom",
-"silhouette", "puzzlereveal", or "spotdifference" question is included
-here since each needs a real attached file (image or audio) — see the
-MEDIA section above. The last question shows a "videoEmbed" — note this
-is unrelated to "media": a video file would go in "media.video", an
-embedded external video goes in "videoEmbed".)
+"silhouette", "puzzlereveal", "spotdifference", or "completepicture"
+question is included here since each needs a real attached file (image
+or audio) — see the MEDIA section above. The last question shows a
+"videoEmbed" — note this is unrelated to "media": a video file would go
+in "media.video", an embedded external video goes in "videoEmbed".)
 
 =========================================================
 HOW TO USE THE AI'S OUTPUT
@@ -453,6 +478,6 @@ HOW TO USE THE AI'S OUTPUT
    it directly.
 5. If import fails, the error message will say why — the most common
    causes are: missing required fields for a type (see above), a typo in
-   "type" (must exactly match one of the 19 listed), or the AI having
+   "type" (must exactly match one of the 20 listed), or the AI having
    added markdown formatting (```json fences) around the JSON that needs
    to be stripped out first.

@@ -23,7 +23,7 @@ Your quizzes are stored in your browser's localStorage; attached images/audio/vi
 
 - 🎨 Kahoot-style gameplay: colored shape answer controls, countdown timer, speed-based scoring (500–1000 pts), streak bonuses, scoreboard between questions, podium at the end
 - 📵 **Player-privacy by design**: for multiple-choice, true/false, order, poll and scale questions, phones never receive the question or answer text — only shape/color tiles matched to what's shown on the shared screen. The host/projector screen always shows the full question, media, and answer text.
-- 🧩 **Nineteen question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, finish the lyrics, blurred picture, zoomed-in picture, silhouette reveal, puzzle piece reveal, slider/numeric, poll, scale, word cloud, open-ended, image pin (drop-a-pin on an image), and spot the difference (two images, tap what changed)
+- 🧩 **Twenty question types**: multiple choice, true/false, order/puzzle, typed answer, word scramble, guess the song, guess the sound, finish the lyrics, blurred picture, zoomed-in picture, silhouette reveal, puzzle piece reveal, slider/numeric, poll, scale, word cloud, open-ended, image pin (drop-a-pin on an image), spot the difference (two images, tap what changed), and complete the picture (pick the matching image out of up to 4)
 - 🖼️ **Local media**: attach an image, video, or audio clip to any question. Media lives in your browser's IndexedDB and is shown on the host screen only — never sent to players, except image-pin's target image, which a phone genuinely needs to answer
 - 🎬 PowerPoint/Slides-style editor: a slide-sorter sidebar with per-type icons, a type picker, time limit and point multiplier per question, and a live host+phone preview of exactly what each screen will show
 - 📱 Players join with a PIN or QR code — nothing to install
@@ -97,10 +97,11 @@ Every question type follows the same rule: **the host screen always shows everyt
 | Open-ended | A text box | Ungraded; responses are listed on the host screen |
 | Image pin | The question's image, tap to drop a pin | The one type that sends an image to the phone — it can't be answered otherwise |
 | Spot the difference | Both images, tap wherever they differ | Two images shown side by side (same pin/tolerance grading as image pin); sends both images to the phone; requires two attached images of the same size/composition |
+| Complete the picture | The main image plus up to 4 candidate images to tap | The one type whose answer *options* are themselves images, not text; sends the main image and every option image to the phone; requires the main image plus at least 2 option images |
 
 ## Local media
 
-Attach an image, video, or audio clip to any question from the editor. Media is stored as a Blob in your browser's IndexedDB (not localStorage, which is too small) and rendered on the host/projector screen only. It's never uploaded anywhere and never sent to players — the exceptions are image-pin and spot-the-difference questions, where the image(s) are sent to the phone because the question can't be answered without them.
+Attach an image, video, or audio clip to any question from the editor. Media is stored as a Blob in your browser's IndexedDB (not localStorage, which is too small) and rendered on the host/projector screen only. It's never uploaded anywhere and never sent to players — the exceptions are image-pin, spot-the-difference, and complete-the-picture questions, where the image(s) are sent to the phone because the question can't be answered without them.
 
 ## Embedded video
 
@@ -172,7 +173,7 @@ This step was **not** performed as part of this change (this environment has no 
 
 ## Architecture
 
-- `js/qtypes.js` is the single place that knows how each question type behaves — validation, scoring, host rendering, the phone control, and the editor fields — so `host.js`/`player.js`/`editor.js` stay generic dispatchers instead of growing a conditional per feature. Adding another question type means adding one entry here.
+- `js/qtypes.js` is the single place that knows how each question type behaves — validation, scoring, host rendering, the phone control, and the editor fields — so `host.js`/`player.js`/`editor.js` stay generic dispatchers instead of growing a conditional per feature. Adding another question type usually means adding one entry here. A type that needs media beyond the common single image/video/audio slot (spot-the-difference's second image, complete-the-picture's per-option images) declares that through a few optional hooks on its own registry entry (`extraMediaRefs`/`rawExtraMediaIds`/`remapExtraMedia`/`buildPlayerCtx` — see the contract comment at the top of `js/qtypes.js`) rather than teaching `js/store.js`/`js/host.js`/`js/editor.js` that type's name.
 - `js/transport/` is the one boundary that knows how a message physically gets from host to player: `config.js` picks a mode (`'peer'` — direct WebRTC, the original behavior — or `'ws'` — the Cloudflare relay), `peer-legacy.js` and `ws-transport.js` each imitate the same tiny PeerJS-shaped API (`Peer`/`DataConnection`: `.on()`, `.send()`, `.close()`, `.destroy()`), and `index.js` picks between them. Neither `host.js` nor `player.js` knows or cares which one is live.
 - `js/media.js` is the IndexedDB-backed media store, shared by the live game (`host.js`) and the editor's live preview.
 - `js/store.js` owns quiz CRUD (localStorage), validation, normalization, and import/export — including migrating quizzes created by earlier versions of QuizParty (a missing `type` defaults to multiple choice; a missing `media` block defaults to empty).
