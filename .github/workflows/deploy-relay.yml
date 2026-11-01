@@ -27,12 +27,16 @@ jobs:
         id: deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy | tee deploy-output.txt
+        # set -o pipefail: without it, `tee`'s own success exit code masks
+        # a failing `wrangler deploy`, so this step would report green even
+        # when the deploy itself failed (as it did the first time, with the
+        # error hidden behind an unrelated path bug in the next step).
+        run: set -o pipefail; npx wrangler deploy | tee deploy-output.txt
 
       - name: Report the deployed URL
         run: |
           echo "## Relay deployed" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' relay/deploy-output.txt >> "$GITHUB_STEP_SUMMARY" || cat relay/deploy-output.txt >> "$GITHUB_STEP_SUMMARY"
+          grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy-output.txt >> "$GITHUB_STEP_SUMMARY" || cat deploy-output.txt >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "Copy that URL into js/transport/config.js's QUIZPARTY_DEFAULT_RELAY_URL and desktop/preload.js's RELAY_URL, then rebuild the Windows installer." >> "$GITHUB_STEP_SUMMARY"

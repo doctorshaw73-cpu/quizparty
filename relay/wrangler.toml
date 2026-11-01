@@ -13,4 +13,6 @@ class_name = "Room"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["Room"]
+# Workers Free plan requires Durable Objects to use the SQLite storage
+# backend (new_sqlite_classes), not the older new_classes.
+new_sqlite_classes = ["Room"]
