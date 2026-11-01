@@ -1,0 +1,48 @@
+{
+  "name": "quizparty",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Free, open-source Kahoot-style live quiz game with no backend.",
+  "license": "MIT",
+  "main": "desktop/main.js",
+  "scripts": {
+    "test": "node test/run-tests.js",
+    "electron:start": "electron .",
+    "dist:win": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.quizparty.desktop",
+    "productName": "QuizParty",
+    "copyright": "Copyright © QuizParty contributors",
+    "asar": true,
+    "files": [
+      "index.html",
+      "css/**/*",
+      "js/**/*",
+      "desktop/**/*",
+      "package.json",
+      "!**/*.md"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "QuizParty",
+      "artifactName": "QuizParty Setup ${version}.${ext}"
+    }
+  }
+}
