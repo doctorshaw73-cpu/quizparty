@@ -189,6 +189,21 @@ function buildEmbedSrc(videoEmbed) {
   return parsed.ref; // 'custom' — the user's own already-embeddable https URL, used as-is
 }
 
+/* A plain, real youtube.com watch link (never youtube-nocookie.com, which
+   isn't a page a browser can navigate to directly) for YouTube embeds only
+   — school/office networks commonly block the embeddable iframe outright
+   even when youtube.com itself is reachable, so js/media.js shows this as
+   a fallback link next to the iframe. Same re-validation discipline as
+   buildEmbedSrc: never trust that videoEmbed was already sanitized. */
+function buildWatchUrl(videoEmbed) {
+  if (!videoEmbed) return null;
+  const parsed = parseVideoEmbed(videoEmbed.ref);
+  if (!parsed || parsed.provider !== videoEmbed.provider || parsed.provider !== 'youtube') return null;
+  let url = `https://www.youtube.com/watch?v=${parsed.ref}`;
+  if (Number.isInteger(videoEmbed.start) && videoEmbed.start >= 0) url += `&t=${videoEmbed.start}s`;
+  return url;
+}
+
 /* Seconds to wait, from the moment the embed is shown, before
    js/host.js's generic "Clip ended" cover should hide it — null if there's
    nothing to cover (no end set, or the provider already halts itself

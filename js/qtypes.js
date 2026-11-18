@@ -65,7 +65,6 @@
 const ORDER_MAX = 6;
 const POLL_MAX = 6;
 const SCALE_MAX_POINTS = MAX_TILES;
-const TYPED_MAX_ACCEPTED = 10;
 const NUMERIC_BOUND = 1e9;   // sane absolute ceiling for imported min/max/step/correct
 
 function tileGridHtml(labels, opts) {
@@ -91,79 +90,6 @@ function fireOnce(fn) {
 function safeTileIndex(raw, count) {
   const c = raw && raw.c;
   return Number.isInteger(c) && c >= 0 && c < count ? { c } : null;
-}
-
-/* ---------- shared "type an answer, matched against an accepted list"
-   behavior — used by typed, scramble, guesssong, and guesssound. Every
-   one of these is, underneath, "show the player a text box; match
-   case-insensitively against one or more accepted strings"; only what's
-   shown on the HOST screen (plain prompt, scrambled letters, or an audio
-   clip) actually differs between them. */
-
-function acceptedAnswerSanitize(raw) {
-  return {
-    accepted: (Array.isArray(raw && raw.accepted) ? raw.accepted : [])
-      .slice(0, TYPED_MAX_ACCEPTED).map(a => safeText(a, 100)),
-  };
-}
-
-function acceptedAnswerValidate(q) {
-  return q.accepted.filter(a => a.trim()).length < 1 ? ['needs at least one accepted answer'] : [];
-}
-
-function acceptedAnswerNormalize(q) {
-  return { ...q, accepted: q.accepted.filter(a => a.trim()) };
-}
-
-function acceptedAnswerIsCorrect(q, s) {
-  if (!s || typeof s.text !== 'string') return false;
-  const norm = s.text.trim().toLowerCase();
-  return norm !== '' && q.accepted.some(a => a.trim().toLowerCase() === norm);
-}
-
-// 60 matches the phone's own <input maxlength="60"> — never trust that
-// control alone, since a modified client can send anything.
-function acceptedAnswerSanitizeSubmission(q, raw) {
-  return (raw && typeof raw.text === 'string') ? { text: raw.text.trim().slice(0, 60) } : null;
-}
-
-// Called as `type.hostReveal(...)`, so `this` resolves to whichever
-// registry entry it's shared by — `this.isCorrect` always means that
-// entry's own isCorrect, even though this one function body is reused
-// across several types.
-function acceptedAnswerHostReveal(el, q, players) {
-  const rows = players.filter(p => p.submission).map(p => `
-    <div class="response-row ${this.isCorrect(q, p.submission) ? 'good' : ''}">${esc(p.name)}: <b>${esc(p.submission.text || '')}</b></div>`).join('');
-  el.innerHTML = `<p class="on-dark" style="text-align:center">Accepted: ${q.accepted.map(esc).join(', ')}</p><div class="response-list">${rows || '<p class="muted">No answers submitted.</p>'}</div>`;
-}
-
-function acceptedAnswerPlayerControl(el, payload, submit) {
-  el.className = 'input-control';
-  el.innerHTML = `<input type="text" id="pc-typed" maxlength="60" placeholder="Type your answer…" autocomplete="off">
-    <button type="button" class="btn primary big full" id="pc-typed-go">Submit</button>`;
-  const send = fireOnce(() => submit({ text: el.querySelector('#pc-typed').value }));
-  el.querySelector('#pc-typed-go').addEventListener('click', send);
-  el.querySelector('#pc-typed').addEventListener('keydown', e => { if (e.key === 'Enter') send(); });
-}
-
-// Renders just the accepted-answer-list editor UI into `el` — callers that
-// need more (guesssong/guesssound's clip-length field) append their own
-// markup/wiring after calling this.
-function acceptedAnswerEditorRender(el, q, onChange) {
-  const rows = q.accepted.map(a => ({ text: a }));
-  el.innerHTML = `<p class="muted hint">Accepted answers (case-insensitive, any one matches):</p>
-    <div class="rows">${editRowsHtml(rows, { checkbox: false, min: 1, placeholder: i => `Accepted answer ${i + 1}` })}</div>
-    <button type="button" class="btn full" data-act="add">+ Add accepted answer</button>`;
-  el.querySelector('.rows').addEventListener('input', e => {
-    const row = e.target.closest('.ans-row');
-    if (row) q.accepted[+row.dataset.i] = e.target.value;
-    onChange();
-  });
-  el.querySelector('.rows').addEventListener('click', e => {
-    const btn = e.target.closest('button[data-act="rm"]');
-    if (btn) { q.accepted.splice(+btn.closest('.ans-row').dataset.i, 1); onChange(true); }
-  });
-  el.querySelector('[data-act="add"]').addEventListener('click', () => { q.accepted.push(''); onChange(true); });
 }
 
 /* Scrambles each word's letters independently (keeping word count/spacing
@@ -210,37 +136,47 @@ function wireClipPlayButton(btn, media, audioClipSeconds) {
   });
 }
 
-/* guesssong/guesssound: identical mechanic (attach an audio clip, players
-   type what they heard), differing only in label/icon/placeholder
-   wording — a shared factory avoids maintaining two near-duplicate
-   registry entries by hand. Audio is REQUIRED, like image-pin requires an
-   image: the question is unanswerable without it. */
+/* guesssong/guesssound/finishlyrics: identical mechanic underneath — play
+   an audio clip, then pick the answer from up to 4 tiles, graded by tile
+   index exactly like mc (shared via the mcAnswer* helpers below) — a
+   shared factory avoids maintaining three near-duplicate registry entries
+   by hand. Differs only in label/icon/prompt wording. Audio is REQUIRED,
+   like image-pin requires an image: the question is unanswerable without
+   it. Tap-a-tile, never typing — see the registry contract comment above
+   for why every type here chose this over a text box. */
 function makeAudioGuessType(label, icon, prompt) {
   return {
     label, icon, graded: true,
-    defaults: () => ({ accepted: [''], audioClipSeconds: null }),
-    sanitize: raw => ({ ...acceptedAnswerSanitize(raw), audioClipSeconds: sanitizeClipSeconds(raw && raw.audioClipSeconds) }),
+    defaults: () => ({
+      answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }],
+      audioClipSeconds: null,
+    }),
+    sanitize: raw => ({
+      answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }),
+      audioClipSeconds: sanitizeClipSeconds(raw && raw.audioClipSeconds),
+    }),
     validate(q) {
-      const problems = acceptedAnswerValidate(q);
+      const problems = mcAnswerValidate(q);
       if (!q.media || !q.media.audio) problems.push('needs an audio clip uploaded');
       return problems;
     },
-    normalize: q => ({ ...acceptedAnswerNormalize(q), audioClipSeconds: q.audioClipSeconds }),
-    playerPayload: () => ({}),
-    isCorrect: acceptedAnswerIsCorrect,
-    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    normalize: q => ({ ...mcAnswerNormalize(q), audioClipSeconds: q.audioClipSeconds }),
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
     hostRender(el, q, media) {
       el.className = '';
       if (!media || !media.audioUrl) { el.innerHTML = `<p class="muted" style="text-align:center">${icon} Audio unavailable.</p>`; return; }
       const clipNote = q.audioClipSeconds ? ` (first ${q.audioClipSeconds}s)` : '';
-      el.innerHTML = `<p class="muted" style="text-align:center">${prompt}${clipNote}</p>
-        <button type="button" class="btn primary big qh-play-clip">▶ Play clip</button>`;
+      el.innerHTML = `<div class="qh-extra"><p class="muted" style="margin:0 0 .5rem">${prompt}${clipNote}</p>
+          <button type="button" class="btn primary big qh-play-clip">▶ Play clip</button>
+        </div><div class="answer-grid">${tileGridHtml(q.answers.map(a => a.text))}</div>`;
       wireClipPlayButton(el.querySelector('.qh-play-clip'), media, q.audioClipSeconds);
     },
-    hostReveal: acceptedAnswerHostReveal,
-    playerControl: acceptedAnswerPlayerControl,
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
     editorRender(el, q, onChange) {
-      acceptedAnswerEditorRender(el, q, onChange);
+      mcAnswerEditorRender(el, q, onChange);
       const clipRow = document.createElement('div');
       clipRow.className = 'q-opts';
       clipRow.innerHTML = `<label>Clip length in seconds (optional — blank plays the whole file)
@@ -258,11 +194,12 @@ function makeAudioGuessType(label, icon, prompt) {
    Puzzle Piece Reveal, Blurred Picture, Zoomed-In Picture, and Silhouette
    Reveal are all the same mechanic underneath: an attached image,
    obscured, that becomes clear over the course of the question's own
-   timer (q.time) — players type a guess the same way as typed/scramble,
-   matched against an accepted list. Only what's visually applied to the
-   image differs (a CSS filter/transform transition for the three
-   filter-based ones, a tile grid for the puzzle one — see puzzlereveal's
-   own entry below, which doesn't fit this factory).
+   timer (q.time), while players pick their guess from answer tiles below
+   it — graded by tile index exactly like mc (shared via the mcAnswer*
+   helpers below). Only what's visually applied to the image differs (a
+   CSS filter/transform transition for the three filter-based ones, a tile
+   grid for the puzzle one — see puzzlereveal's own entry below, which
+   doesn't fit this factory).
 
    These require hiding the generic host-only media area (#hq-media) for
    the live question: that pipeline (js/media.js resolveMediaUrls/
@@ -290,27 +227,27 @@ function nextPaint(fn) {
 function makeImageRevealType(label, icon, setupReveal) {
   return {
     label, icon, graded: true,
-    defaults: () => ({ accepted: [''] }),
-    sanitize: acceptedAnswerSanitize,
+    defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
+    sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
     validate(q) {
-      const problems = acceptedAnswerValidate(q);
+      const problems = mcAnswerValidate(q);
       if (!q.media || !q.media.image) problems.push('needs an image uploaded');
       return problems;
     },
-    normalize: acceptedAnswerNormalize,
-    playerPayload: () => ({}),
-    isCorrect: acceptedAnswerIsCorrect,
-    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    normalize: mcAnswerNormalize,
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
     hostRender(el, q, media) {
       el.className = '';
       hideGenericHostMedia();
       if (!media || !media.imageUrl) { el.innerHTML = `<p class="muted" style="text-align:center">${icon} Image unavailable.</p>`; return; }
-      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt=""></div>`;
+      el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt=""></div><div class="answer-grid">${tileGridHtml(q.answers.map(a => a.text))}</div>`;
       setupReveal(el.querySelector('.reveal-img'), q.time);
     },
-    hostReveal: acceptedAnswerHostReveal,
-    playerControl: acceptedAnswerPlayerControl,
-    editorRender: acceptedAnswerEditorRender,
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
+    editorRender: mcAnswerEditorRender,
   };
 }
 
@@ -360,7 +297,7 @@ function mcAnswerEditorRender(el, q, onChange) {
   wireEditRows(el, q, 'answers', onChange, { max: 4, checkbox: true });
 }
 
-/* ---------- shared row editor (answers / options / items / accepted) ---------- */
+/* ---------- shared row editor (answers / options / items) ---------- */
 function editRowsHtml(rows, opts) {
   return rows.map((r, i) => `
     <div class="ans-row" data-i="${i}">
@@ -553,104 +490,66 @@ const QuestionTypes = {
 
   /* ================= typed answer ================= */
   typed: {
+    // No typing despite the name/icon (kept for backward compatibility with
+    // existing quizzes/docs that reference "typed") — tap-a-tile, same as
+    // every other type below. With no media and no special host effect,
+    // this is now functionally identical to "mc"; kept as its own labeled
+    // entry rather than merged away.
     label: 'Typed answer', icon: '⌨️', graded: true,
-    defaults: () => ({ accepted: [''] }),
-    sanitize: acceptedAnswerSanitize,
-    validate: acceptedAnswerValidate,
-    normalize: acceptedAnswerNormalize,
-    playerPayload: () => ({}),
-    isCorrect: acceptedAnswerIsCorrect,
-    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
-    hostRender(el) { el.className = ''; el.innerHTML = `<p class="muted" style="text-align:center">⌨️ Players are typing their answer on their phones…</p>`; },
-    hostReveal: acceptedAnswerHostReveal,
-    playerControl: acceptedAnswerPlayerControl,
-    editorRender: acceptedAnswerEditorRender,
+    defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
+    sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
+    validate: mcAnswerValidate,
+    normalize: mcAnswerNormalize,
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
+    hostRender(el, q) { el.innerHTML = tileGridHtml(q.answers.map(a => a.text)); el.className = 'answer-grid'; },
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
+    editorRender: mcAnswerEditorRender,
   },
 
   /* ================= word scramble ================= */
   scramble: {
     label: 'Word Scramble', icon: '🔤', graded: true,
-    defaults: () => ({ accepted: [''] }),
-    sanitize: acceptedAnswerSanitize,
-    validate: acceptedAnswerValidate,
-    normalize: acceptedAnswerNormalize,
-    playerPayload: () => ({}),
-    isCorrect: acceptedAnswerIsCorrect,
-    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
-    // Scrambled fresh on every call rather than cached — hostRender is only
-    // ever called once per live question (see js/host.js startQuestion),
-    // so this never re-shuffles mid-question; the harmless exception is
-    // the editor's own live preview, which may re-shuffle as the host
-    // types the answer, which is fine since it's not a real game.
-    hostRender(el, q) {
-      el.className = '';
-      const word = (q.accepted[0] || '').trim();
-      if (!word) { el.innerHTML = `<p class="muted" style="text-align:center">🔤 Add an accepted answer to scramble.</p>`; return; }
-      const scrambled = scrambleWords(word.toUpperCase());
-      el.innerHTML = `<p class="muted" style="text-align:center">🔤 Unscramble:</p>
-        <div class="scramble-letters">${scrambled.split('').map(ch => ch === ' '
-          ? '<span class="scramble-space"></span>'
-          : `<span class="scramble-letter">${esc(ch)}</span>`).join('')}</div>`;
-    },
-    hostReveal: acceptedAnswerHostReveal,
-    playerControl: acceptedAnswerPlayerControl,
-    editorRender: acceptedAnswerEditorRender,
-  },
-
-  /* ================= guess the song ================= */
-  guesssong: makeAudioGuessType('Guess the Song', '🎵', '🎵 Players are listening for the song…'),
-
-  /* ================= guess the sound ================= */
-  guesssound: makeAudioGuessType('Guess the Sound', '🔊', '🔊 Players are listening for the sound…'),
-
-  /* ================= finish the lyrics ================= */
-  // Plays an audio clip (song, paused where the host stops it, same
-  // "Play clip" control as guesssong/guesssound) then players choose the
-  // next line from up to 4 answer tiles — same text-answer-tile mechanic
-  // and grading as mc, just shared via the mcAnswer* helpers above.
-  finishlyrics: {
-    label: 'Finish the Lyrics', icon: '🎤', graded: true,
-    defaults: () => ({
-      answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }],
-      audioClipSeconds: null,
-    }),
-    sanitize: raw => ({
-      answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }),
-      audioClipSeconds: sanitizeClipSeconds(raw && raw.audioClipSeconds),
-    }),
-    validate(q) {
-      const problems = mcAnswerValidate(q);
-      if (!q.media || !q.media.audio) problems.push('needs an audio clip uploaded');
-      return problems;
-    },
-    normalize: q => ({ ...mcAnswerNormalize(q), audioClipSeconds: q.audioClipSeconds }),
+    defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
+    sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
+    validate: mcAnswerValidate,
+    normalize: mcAnswerNormalize,
     playerPayload: mcAnswerPlayerPayload,
     isCorrect: mcAnswerIsCorrect,
     sanitizeSubmission: mcAnswerSanitizeSubmission,
-    hostRender(el, q, media) {
-      el.className = 'answer-grid';
-      if (!media || !media.audioUrl) { el.innerHTML = `<p class="muted" style="text-align:center">🎤 Audio unavailable.</p>`; return; }
-      const clipNote = q.audioClipSeconds ? ` (first ${q.audioClipSeconds}s)` : '';
-      el.innerHTML = `<div class="finishlyrics-clip">
-          <button type="button" class="btn primary big qh-play-clip">▶ Play clip${clipNote}</button>
-        </div>${tileGridHtml(q.answers.map(a => a.text))}`;
-      wireClipPlayButton(el.querySelector('.qh-play-clip'), media, q.audioClipSeconds);
+    // Scrambles the CORRECT answer's letters (first one marked correct) and
+    // shows that as a visual clue above the answer tiles — fresh every call,
+    // but hostRender only ever runs once per live question (see js/host.js
+    // startQuestion), so this never re-shuffles mid-question; the harmless
+    // exception is the editor's own live preview, which may re-shuffle as
+    // the host types, which is fine since it's not a real game.
+    hostRender(el, q) {
+      el.className = '';
+      const correct = q.answers.find(a => a.correct && a.text.trim());
+      const word = correct ? correct.text.trim() : '';
+      if (!word) { el.innerHTML = `<p class="muted" style="text-align:center">🔤 Mark a correct answer to scramble.</p>`; return; }
+      const scrambled = scrambleWords(word.toUpperCase());
+      el.innerHTML = `<div class="qh-extra"><p class="muted" style="margin:0 0 .5rem">🔤 Unscramble, then pick the match:</p>
+          <div class="scramble-letters">${scrambled.split('').map(ch => ch === ' '
+            ? '<span class="scramble-space"></span>'
+            : `<span class="scramble-letter">${esc(ch)}</span>`).join('')}</div>
+        </div><div class="answer-grid">${tileGridHtml(q.answers.map(a => a.text))}</div>`;
     },
     hostReveal: mcAnswerHostReveal,
     playerControl: mcAnswerPlayerControl,
-    editorRender(el, q, onChange) {
-      mcAnswerEditorRender(el, q, onChange);
-      const clipRow = document.createElement('div');
-      clipRow.className = 'q-opts';
-      clipRow.innerHTML = `<label>Clip length in seconds (optional — blank plays the whole file)
-        <input type="number" id="qt-clipsec" min="1" max="${AUDIO_CLIP_MAX_SEC}" step="1" value="${q.audioClipSeconds || ''}"></label>`;
-      el.appendChild(clipRow);
-      el.querySelector('#qt-clipsec').addEventListener('change', e => {
-        q.audioClipSeconds = e.target.value === '' ? null : sanitizeClipSeconds(+e.target.value);
-        onChange();
-      });
-    },
+    editorRender: mcAnswerEditorRender,
   },
+
+  /* ================= guess the song ================= */
+  guesssong: makeAudioGuessType('Guess the Song', '🎵', '🎵 Listen to the clip, then pick the song…'),
+
+  /* ================= guess the sound ================= */
+  guesssound: makeAudioGuessType('Guess the Sound', '🔊', '🔊 Listen to the clip, then pick the sound…'),
+
+  /* ================= finish the lyrics ================= */
+  finishlyrics: makeAudioGuessType('Finish the Lyrics', '🎤', '🎤 Listen to the clip, then pick the next line…'),
 
   /* ================= blurred picture ================= */
   blur: makeImageRevealType('Blurred Picture', '🌫️', (imgEl, seconds) => {
@@ -677,17 +576,17 @@ const QuestionTypes = {
   /* ================= puzzle piece reveal ================= */
   puzzlereveal: {
     label: 'Puzzle Piece Reveal', icon: '🧩', graded: true,
-    defaults: () => ({ accepted: [''] }),
-    sanitize: acceptedAnswerSanitize,
+    defaults: () => ({ answers: [{ text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false }] }),
+    sanitize: raw => ({ answers: safeRows(raw && raw.answers, { max: 4, maxLen: 100, checkbox: true }) }),
     validate(q) {
-      const problems = acceptedAnswerValidate(q);
+      const problems = mcAnswerValidate(q);
       if (!q.media || !q.media.image) problems.push('needs an image uploaded');
       return problems;
     },
-    normalize: acceptedAnswerNormalize,
-    playerPayload: () => ({}),
-    isCorrect: acceptedAnswerIsCorrect,
-    sanitizeSubmission: acceptedAnswerSanitizeSubmission,
+    normalize: mcAnswerNormalize,
+    playerPayload: mcAnswerPlayerPayload,
+    isCorrect: mcAnswerIsCorrect,
+    sanitizeSubmission: mcAnswerSanitizeSubmission,
     // A grid of opaque tiles over the image, each disappearing at its own
     // staggered moment (CSS transition-delay, not a JS timer per tile) so
     // the last tile clears exactly when the question's own timer (q.time)
@@ -707,7 +606,7 @@ const QuestionTypes = {
       el.innerHTML = `<div class="reveal-wrap"><img class="reveal-img" src="${media.imageUrl}" alt="">
         <div class="puzzle-grid" style="grid-template-columns:repeat(${COLS},1fr);grid-template-rows:repeat(${ROWS},1fr)">
           ${Array.from({ length: total }, () => '<div class="puzzle-tile"></div>').join('')}
-        </div></div>`;
+        </div></div><div class="answer-grid">${tileGridHtml(q.answers.map(a => a.text))}</div>`;
       const tiles = el.querySelectorAll('.puzzle-tile');
       const perTile = q.time / total;
       order.forEach((tileIndex, revealPos) => {
@@ -716,9 +615,9 @@ const QuestionTypes = {
       });
       nextPaint(() => { tiles.forEach(t => { t.style.opacity = '0'; }); });
     },
-    hostReveal: acceptedAnswerHostReveal,
-    playerControl: acceptedAnswerPlayerControl,
-    editorRender: acceptedAnswerEditorRender,
+    hostReveal: mcAnswerHostReveal,
+    playerControl: mcAnswerPlayerControl,
+    editorRender: mcAnswerEditorRender,
   },
 
   /* ================= slider / numeric ================= */
