@@ -26,6 +26,13 @@ function sampleQuiz() {
   };
 }
 
+// These 8 types used to be "type an answer, matched against an accepted
+// list" (a plain text box on the phone) before they switched to tap-a-tile
+// answer choices. A quiz saved by that earlier version still has the old
+// `accepted` array and no `answers` array at all — migrateQuiz() below
+// converts it so the editor/host never see a missing `answers` field.
+const TYPES_MIGRATED_FROM_ACCEPTED = ['typed', 'scramble', 'guesssong', 'guesssound', 'finishlyrics', 'blur', 'zoom', 'silhouette', 'puzzlereveal'];
+
 /* Fills in fields added after a quiz was first saved, so quizzes created by
    earlier versions of QuizParty keep working unchanged. */
 function migrateQuiz(quiz) {
@@ -33,6 +40,18 @@ function migrateQuiz(quiz) {
     if (!q.type || !QuestionTypes[q.type]) q.type = 'mc';
     if (!q.media) q.media = emptyMedia();
     if (q.videoEmbed === undefined) q.videoEmbed = null;
+    if (TYPES_MIGRATED_FROM_ACCEPTED.includes(q.type) && !Array.isArray(q.answers)) {
+      const firstAccepted = Array.isArray(q.accepted) ? q.accepted.find(a => typeof a === 'string' && a.trim()) : null;
+      q.answers = [
+        { text: firstAccepted || '', correct: !!firstAccepted },
+        { text: '', correct: false }, { text: '', correct: false }, { text: '', correct: false },
+      ];
+      delete q.accepted;
+      // A migrated question still needs real wrong-answer options filled in
+      // before it can be hosted — validateQuiz() already surfaces that via
+      // its normal "needs at least 2 answers" check, same as any other
+      // under-filled mc-style question.
+    }
   });
   return quiz;
 }
@@ -175,6 +194,16 @@ const MAX_IMPORT_QUESTIONS = 200;
    importQuizJson). */
 function sanitizeQuestion(raw) {
   const type = QUESTION_TYPE_LIST.includes(raw && raw.type) ? raw.type : 'mc';
+  // An imported file from before these 8 types switched from a typed
+  // accepted-answer list to tap-a-tile answers (see migrateQuiz's own
+  // comment) carries `accepted`, not `answers` — same conversion applied
+  // here so re-importing an old export doesn't just silently lose its one
+  // real answer.
+  let effectiveRaw = raw;
+  if (TYPES_MIGRATED_FROM_ACCEPTED.includes(type) && (!raw || !Array.isArray(raw.answers)) && raw && Array.isArray(raw.accepted)) {
+    const firstAccepted = raw.accepted.find(a => typeof a === 'string' && a.trim());
+    if (firstAccepted) effectiveRaw = { ...raw, answers: [{ text: firstAccepted, correct: true }] };
+  }
   return {
     type,
     text: safeText(raw && raw.text, 200),
@@ -182,7 +211,7 @@ function sanitizeQuestion(raw) {
     points: ['standard', 'double', 'none'].includes(raw && raw.points) ? raw.points : 'standard',
     media: emptyMedia(),
     videoEmbed: sanitizeVideoEmbed(raw && raw.videoEmbed),
-    ...QuestionTypes[type].sanitize(raw),
+    ...QuestionTypes[type].sanitize(effectiveRaw),
   };
 }
 

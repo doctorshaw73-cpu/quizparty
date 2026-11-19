@@ -211,6 +211,10 @@ function mediaHtml(urls, videoEmbed) {
   if (urls.videoUrl) parts.push(`<video src="${urls.videoUrl}" class="q-media-vid" controls></video>`);
   if (urls.audioUrl) parts.push(`<audio src="${urls.audioUrl}" class="q-media-aud" controls></audio>`);
   const embedSrc = buildEmbedSrc(videoEmbed);
-  if (embedSrc) parts.push(`<iframe class="q-media-embed" src="${embedSrc}" title="Embedded video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`);
+  if (embedSrc) {
+    parts.push(`<iframe class="q-media-embed" src="${embedSrc}" title="Embedded video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`);
+    const watchUrl = buildWatchUrl(videoEmbed);
+    if (watchUrl) parts.push(`<p class="q-media-embed-fallback">Embed not loading? <a href="${esc(watchUrl)}" target="_blank" rel="noopener noreferrer">Watch on YouTube ↗</a> (some networks, like schools, block the embed)</p>`);
+  }
   return parts.join('');
 }

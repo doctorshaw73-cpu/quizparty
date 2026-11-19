@@ -312,6 +312,8 @@ button, input, select, textarea { font: inherit; }
   background: rgba(0,0,0,.6); color: #fff; display: flex; align-items: center; justify-content: center;
   font-weight: 700; font-size: 1.1rem;
 }
+.q-media-embed-fallback { font-size: .8rem; opacity: .7; max-width: 640px; margin: .2rem auto 0; }
+.q-media-embed-fallback a { color: inherit; }
 
 /* ---------- order / puzzle (host list + tile-list reveal) ---------- */
 .tile-list { display: flex; flex-direction: column; gap: .5rem; max-width: 500px; margin: 0 auto; width: 100%; padding: 0 1rem; }
@@ -332,15 +334,18 @@ button, input, select, textarea { font: inherit; }
 
 /* ---------- progressive image reveal (blur / zoom / silhouette / puzzle) ---------- */
 .reveal-wrap {
-  position: relative; max-width: 520px; margin: 0 auto; overflow: hidden;
+  position: relative; max-width: 420px; margin: 0 auto .8rem; overflow: hidden;
   border-radius: 8px; box-shadow: 0 3px 12px rgba(0,0,0,.3); line-height: 0;
 }
 .reveal-img { display: block; width: 100%; height: auto; }
 .puzzle-grid { position: absolute; inset: 0; display: grid; }
 .puzzle-tile { background: #1a1a2e; border: 1px solid rgba(255,255,255,.06); }
 
-/* ---------- finish the lyrics (clip button above the answer tiles) ---------- */
-.finishlyrics-clip { text-align: center; padding: .5rem 0 1rem; }
+/* ---------- content shown above a type's answer tiles: a clip button
+   (guesssong/guesssound/finishlyrics) or the scrambled-letters clue
+   (scramble) — a full-width block, never a grid cell among the tiles
+   below it ---------- */
+.qh-extra { text-align: center; padding: .5rem 0 1rem; }
 
 /* ---------- spot the difference (two images side by side) ---------- */
 .spotdiff-wrap { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; padding: 0 1rem; }

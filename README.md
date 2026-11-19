@@ -76,20 +76,22 @@ Before your own build's QR codes point anywhere real, deploy the relay (`relay/R
 
 Every question type follows the same rule: **the host screen always shows everything** (question text, media, answer text); **the phone shows only what it needs to answer**.
 
+No question type ever makes a player type an answer on their phone — every one is tap-a-choice. This matches how every major Kahoot-style competitor actually works: HQ Trivia and Jackbox's Trivia Murder Party are multiple-choice only; Kahoot's and Blooket's own default and most-used format is multiple choice, with typed answers only ever a secondary, more limited option. Word cloud and open-ended are the one deliberate exception — their entire point is varied free text, and even Kahoot's own word cloud still requires typing for that same reason.
+
 | Type | Phone shows | Notes |
 |---|---|---|
 | Multiple choice | Colored shape tiles, no text | 2–4 answers, one or more correct |
 | True / False | ✓ / ✗ tiles | |
 | Order / puzzle | Colored shape tiles, tapped in sequence | Correct order = the order items are listed in the editor |
-| Typed answer | A text box | Case-insensitive match against one or more accepted answers |
-| Word scramble | A text box | Same matching as typed answer; the host screen shows the accepted answer's letters shuffled (word boundaries kept) |
-| Guess the song | A text box | Host plays an attached audio clip (optionally auto-trimmed to a set length); same matching as typed answer; requires an attached audio clip |
-| Guess the sound | A text box | Identical mechanic to guess the song, for a sound effect instead of a song |
+| Typed answer | Colored shape tiles, no text | Despite the name, no typing — tap one of up to 4 answer tiles, graded by index exactly like multiple choice |
+| Word scramble | Colored shape tiles, no text | Same tile grading as multiple choice; the host screen scrambles the correct answer's letters into a visual clue above the tiles |
+| Guess the song | Colored shape tiles, no text | Host plays an attached audio clip (optionally auto-trimmed to a set length), then players tap an answer tile; requires an attached audio clip |
+| Guess the sound | Colored shape tiles, no text | Identical mechanic to guess the song, for a sound effect instead of a song |
 | Finish the lyrics | Colored shape tiles, no text | Host plays an attached audio clip, then players pick the next line from up to 4 answer tiles; same tile grading as multiple choice |
-| Blurred picture | A text box | Host screen shows the attached image starting heavily blurred, smoothly sharpening to fully clear over the question's time limit; same matching as typed answer; requires an attached image |
-| Zoomed-in picture | A text box | Identical mechanic to blurred picture; the host screen instead starts zoomed into an extreme close-up and zooms back out to the full image |
-| Silhouette reveal | A text box | Identical mechanic to blurred picture; the host screen instead starts as a solid black silhouette and fades up to full color |
-| Puzzle piece reveal | A text box | Identical mechanic to blurred picture; the host screen instead covers the image with tiles that disappear one at a time in random order, timed to finish as the clock runs out |
+| Blurred picture | Colored shape tiles, no text | Host screen shows the attached image starting heavily blurred, smoothly sharpening to fully clear over the question's time limit, with answer tiles below it; requires an attached image |
+| Zoomed-in picture | Colored shape tiles, no text | Identical mechanic to blurred picture; the host screen instead starts zoomed into an extreme close-up and zooms back out to the full image |
+| Silhouette reveal | Colored shape tiles, no text | Identical mechanic to blurred picture; the host screen instead starts as a solid black silhouette and fades up to full color |
+| Puzzle piece reveal | Colored shape tiles, no text | Identical mechanic to blurred picture; the host screen instead covers the image with tiles that disappear one at a time in random order, timed to finish as the clock runs out |
 | Slider / numeric | A range slider (min/max only, no correct value) | Scored within a small tolerance |
 | Poll | Colored shape tiles, no text | Ungraded — just shows the distribution |
 | Scale | Numbered tiles (e.g. 1–5) | Ungraded rating/Likert-style question |
@@ -107,7 +109,7 @@ Attach an image, video, or audio clip to any question from the editor. Media is 
 
 Besides attaching your own video file, a question can embed a video from an external site instead — paste its URL into the editor's video-embed field (`js/util.js`'s `parseVideoEmbed`/`buildEmbedSrc`). Nothing is downloaded or stored locally; it's a live `<iframe>` on the host screen only, exactly like every other media attachment (never sent to players).
 
-- **YouTube** — real, documented clip support: seeks to a start time and the player itself halts at the end time, via YouTube's own privacy-enhanced `youtube-nocookie.com` embed domain.
+- **YouTube** — real, documented clip support: seeks to a start time and the player itself halts at the end time, via YouTube's own privacy-enhanced `youtube-nocookie.com` embed domain. A "Watch on YouTube ↗" link also appears next to the embed, since school/office networks commonly block the embeddable iframe outright even when youtube.com itself is reachable — a problem real enough that Kahoot's own help docs mention it (and that Kahoot's current answer to is dropping YouTube embeds entirely; this app keeps the real embed and just adds the fallback link instead).
 - **Vimeo** — real seek-to-start, via Vimeo's own documented `#t=` URL fragment. Vimeo has no URL-based way to halt playback, so "end" is handled generically (below) rather than natively.
 - **Facebook** — via Facebook's own official [Video Plugin](https://developers.facebook.com/docs/plugins/embedded-video-player) iframe. Facebook has no documented way to seek or trim via URL at all, so start/end are dropped entirely for it (the editor disables those fields and says so) rather than stored as if they meant something.
 - **Anything else** (Yandex, or any other site) — there's no reliable, standardized way to auto-detect or seek/trim for an arbitrary platform without being confident its embed format is stable and documented, so this is a deliberate generic fallback: paste that site's own real embeddable URL (typically from its "Share → Embed" feature) and it's used as-is.

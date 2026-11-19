@@ -81,26 +81,38 @@ THE 20 QUESTION TYPES — EXACT FIELDS FOR EACH
    them in this array — item 0 must come first, item 1 second, etc.
 
 4) "typed" — Typed answer (graded)
-   "accepted": [ "string, max 100 chars", ... ]
-   Rules: 1 to 10 accepted answers. Matching is case-insensitive and
-   exact after trimming whitespace (no fuzzy matching) — so list every
-   reasonable spelling/phrasing you want accepted, e.g.
-   ["Paris", "paris, france"].
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   (identical shape/rules to "mc": 2 to 4 answers, at least one "correct")
+   Despite the name, players do NOT type anything — they tap one of up to
+   4 answer tiles on their phone (shape only; the text shows on the host
+   screen), graded by which tile they tapped. This app deliberately never
+   makes a player type an answer on their phone — every major Kahoot-
+   style competitor (Kahoot, Blooket, HQ Trivia) defaults to tap-a-choice
+   for exactly this reason (faster, no typos, no autocorrect fights). So
+   when generating a "typed"-labeled question, write 1 correct answer
+   plus 2-3 plausible wrong answers, exactly as you would for "mc" —
+   there is in fact no real difference between "typed" and "mc" anymore;
+   use whichever label fits how you're thinking about the question.
 
 5) "scramble" — Word Scramble (graded)
-   "accepted": [ "string, max 100 chars", ... ]  (identical shape/rules to
-   "typed" above, including the phrasing-variants trick)
-   The host screen automatically shuffles the FIRST accepted answer's
-   letters (word boundaries/spacing are kept, so a multi-word answer still
-   shows as separate scrambled words) — you don't generate the scrambled
-   form yourself, the app does it. Pick a short, single-concept answer
-   (one word or a short phrase) — a long sentence makes a messy scramble.
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   (identical shape/rules to "mc")
+   The host screen automatically scrambles the CORRECT answer's letters
+   into a visual clue (word boundaries/spacing are kept, so a multi-word
+   answer still shows as separate scrambled words) above the answer tiles
+   — you don't generate the scrambled form yourself, the app does it.
+   Players tap one of the tiles (same as "mc"), not type — pick a short,
+   single-concept correct answer (one word or a short phrase, a long
+   sentence makes a messy scramble) plus 2-3 plausible wrong decoys.
 
 6) "guesssong" — Guess the Song (graded, REQUIRES a real attached audio clip)
-   "accepted": [ "string, max 100 chars", ... ]  (same shape/rules as "typed")
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   (identical shape/rules to "mc" — the correct song title plus 2-3
+   plausible wrong song titles as decoys)
    "audioClipSeconds": integer 1-30, optional (null/omitted = play the
    whole file). The host clicks a "Play clip" button that plays the
-   attached audio, auto-stopping after this many seconds if set.
+   attached audio, auto-stopping after this many seconds if set, then
+   players tap one of the answer tiles (not type).
    IMPORTANT: unanswerable without a real audio file attached via
    "media.audio" (see MEDIA section) — same rule as "imagepin" needing an
    image. Do not generate this type unless you're also embedding real
@@ -123,8 +135,10 @@ THE 20 QUESTION TYPES — EXACT FIELDS FOR EACH
    "guesssong".
 
 9) "blur" — Blurred Picture (graded, REQUIRES a real attached image)
-   "accepted": [ "string, max 100 chars", ... ]  (same shape/rules as
-   "typed"/"scramble") — players type what the picture shows.
+   "answers": [ { "text": "string, max 100 chars", "correct": true|false }, ... ]
+   (identical shape/rules to "mc" — the correct answer plus 2-3 plausible
+   wrong decoys; players tap a tile, they do not type what the picture
+   shows)
    The host screen shows the attached image starting heavily blurred,
    then smoothly sharpens to fully clear over the question's own time
    limit ("time" field) — no separate reveal-duration field needed.
@@ -392,7 +406,12 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
       "time": 20,
       "points": "standard",
       "media": { "image": null, "video": null, "audio": null },
-      "accepted": ["Vatican City", "Vatican", "The Vatican"]
+      "answers": [
+        { "text": "Vatican City", "correct": true },
+        { "text": "Monaco", "correct": false },
+        { "text": "San Marino", "correct": false },
+        { "text": "Liechtenstein", "correct": false }
+      ]
     },
     {
       "type": "scramble",
@@ -400,7 +419,11 @@ A COMPLETE, VALID EXAMPLE (study this shape closely)
       "time": 20,
       "points": "standard",
       "media": { "image": null, "video": null, "audio": null },
-      "accepted": ["Eiffel Tower"]
+      "answers": [
+        { "text": "Eiffel Tower", "correct": true },
+        { "text": "Arc de Triomphe", "correct": false },
+        { "text": "Louvre Pyramid", "correct": false }
+      ]
     },
     {
       "type": "slider",

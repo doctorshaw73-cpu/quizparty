@@ -35,9 +35,9 @@ function makeLocalStorage() {
    override them on `.ctx` after loading — see loadSandbox(). */
 const EXPORTED_NAMES = [
   'QuestionTypes', 'QUESTION_TYPE_LIST', 'questionTypeOf', 'MAX_TILES', 'SHAPES', 'esc', 'clamp', 'uid',
-  'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc', 'clipCoverDelaySec', 'CLIP_SEEK_PROVIDERS',
+  'extractYoutubeId', 'parseVideoEmbed', 'sanitizeVideoEmbed', 'buildEmbedSrc', 'buildWatchUrl', 'clipCoverDelaySec', 'CLIP_SEEK_PROVIDERS',
   'safeText', 'safeBool', 'safeNumber', 'safeRows',
-  'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'TYPED_MAX_ACCEPTED', 'scrambleWords', 'sanitizeClipSeconds', 'AUDIO_CLIP_MAX_SEC',
+  'ORDER_MAX', 'POLL_MAX', 'SCALE_MAX_POINTS', 'scrambleWords', 'sanitizeClipSeconds', 'AUDIO_CLIP_MAX_SEC',
   'validateQuiz', 'normalizeQuiz', 'blankQuestion', 'retypeQuestion', 'migrateQuiz', 'sanitizeQuestion',
   'getQuizzes', 'saveQuizzes', 'getQuiz', 'upsertQuiz', 'deleteQuiz', 'newQuiz', 'emptyMedia', 'collectMediaIds',
   'importQuizJson', 'exportQuiz', 'referencedRawMediaIds', 'importMedia', 'remapImportedMedia', 'MAX_IMPORT_QUESTIONS',
@@ -149,9 +149,9 @@ test('order: needs at least 2 filled items', ({ QuestionTypes }) => {
   assert.strictEqual(QuestionTypes.order.validate({ items: [{ text: 'A' }, { text: 'B' }] }).length, 0);
 });
 
-test('typed: needs at least one accepted answer', ({ QuestionTypes }) => {
-  assert.ok(QuestionTypes.typed.validate({ accepted: [''] }).length > 0);
-  assert.strictEqual(QuestionTypes.typed.validate({ accepted: ['Paris'] }).length, 0);
+test('typed: needs at least 2 answers with one marked correct (tap-a-tile, same rule as mc)', ({ QuestionTypes }) => {
+  assert.ok(QuestionTypes.typed.validate({ answers: [{ text: 'Paris', correct: true }] }).length > 0);
+  assert.strictEqual(QuestionTypes.typed.validate({ answers: [{ text: 'Paris', correct: true }, { text: 'London', correct: false }] }).length, 0);
 });
 
 test('slider: min must be less than max, correct must be in range', ({ QuestionTypes }) => {
@@ -208,13 +208,6 @@ test('order: exact identity permutation is correct, anything else is not', ({ Qu
   assert.strictEqual(QuestionTypes.order.isCorrect(q, { order: [0, 1] }), false); // wrong length
 });
 
-test('typed: case-insensitive, trimmed match against any accepted answer', ({ QuestionTypes }) => {
-  const q = { accepted: ['Paris', 'paris, france'] };
-  assert.strictEqual(QuestionTypes.typed.isCorrect(q, { text: '  PARIS  ' }), true);
-  assert.strictEqual(QuestionTypes.typed.isCorrect(q, { text: 'London' }), false);
-  assert.strictEqual(QuestionTypes.typed.isCorrect(q, { text: '' }), false);
-});
-
 test('slider: within tolerance counts, outside does not', ({ QuestionTypes }) => {
   const q = { min: 0, max: 100, step: 1, correct: 50 };
   assert.strictEqual(QuestionTypes.slider.isCorrect(q, { value: 50 }), true);
@@ -254,18 +247,11 @@ test('mc/tf/order/poll/scale player payloads carry no text fields', ({ QuestionT
   }
 });
 
-test('typed/slider/wordcloud/open player payloads carry no accepted-answer data', ({ QuestionTypes }) => {
-  jsonEqual(QuestionTypes.typed.playerPayload({ accepted: ['secret'] }, {}), {});
+test('slider/wordcloud/open player payloads carry no secret data', ({ QuestionTypes }) => {
   jsonEqual(QuestionTypes.wordcloud.playerPayload({}, {}), {});
   jsonEqual(QuestionTypes.open.playerPayload({}, {}), {});
   const sliderPayload = QuestionTypes.slider.playerPayload({ min: 0, max: 10, step: 1, correct: 7 }, {});
   assert.strictEqual(sliderPayload.correct, undefined);
-});
-
-test('scramble/guesssong/guesssound player payloads carry no accepted-answer data (the unscrambled word, or what to listen for, never reaches the phone)', ({ QuestionTypes }) => {
-  jsonEqual(QuestionTypes.scramble.playerPayload({ accepted: ['elephant'] }, {}), {});
-  jsonEqual(QuestionTypes.guesssong.playerPayload({ accepted: ['bohemian rhapsody'] }, {}), {});
-  jsonEqual(QuestionTypes.guesssound.playerPayload({ accepted: ['thunder'] }, {}), {});
 });
 
 test('scrambleWords: same letters, same word count/spacing, actually shuffled, never leaves a multi-letter word unscrambled', ({ scrambleWords }) => {
@@ -296,57 +282,73 @@ test('sanitizeClipSeconds: accepts 1-30 integer seconds, rejects/nulls everythin
   assert.strictEqual(sanitizeClipSeconds(undefined), null);
 });
 
+/* typed, scramble, guesssong, guesssound, blur, zoom, silhouette, and
+   puzzlereveal all used to be "type an answer, matched against an accepted
+   list" (a text box on the phone). They're now all tap-a-tile, graded by
+   index exactly like mc, via the shared mcAnswer* helpers — see
+   js/qtypes.js's registry contract comment for why (every major
+   Kahoot/Blooket/HQ-Trivia-style competitor defaults to choice, never
+   requires typing). finishlyrics already worked this way and is covered
+   by its own tests above; these cover the 8 that converted. */
+const TILE_CHOICE_TYPES = ['typed', 'scramble', 'guesssong', 'guesssound', 'blur', 'zoom', 'silhouette', 'puzzlereveal'];
+const AUDIO_TILE_TYPES = ['guesssong', 'guesssound'];
+const IMAGE_TILE_TYPES = ['blur', 'zoom', 'silhouette', 'puzzlereveal'];
+
+test('typed/scramble/guesssong/guesssound/blur/zoom/silhouette/puzzlereveal: isCorrect/sanitizeSubmission/playerPayload behave exactly like mc (shared mcAnswer* implementation)', ({ QuestionTypes }) => {
+  for (const type of TILE_CHOICE_TYPES) {
+    const q = { answers: [{ text: 'A', correct: false }, { text: 'B', correct: true }] };
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { c: 1 }), true, `${type} should grade by tile index`);
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, { c: 0 }), false);
+    assert.strictEqual(QuestionTypes[type].isCorrect(q, null), false);
+    jsonEqual(QuestionTypes[type].sanitizeSubmission(q, { c: 1 }), { c: 1 });
+    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { c: 99 }), null, `${type}: an out-of-range tile index must be rejected, not clamped`);
+    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { c: 'x' }), null);
+    jsonEqual(QuestionTypes[type].playerPayload(q), { count: 2 });
+  }
+});
+
+test('typed/scramble: validate() needs at least 2 answers with one marked correct, no media required', ({ QuestionTypes }) => {
+  for (const type of ['typed', 'scramble']) {
+    assert.ok(QuestionTypes[type].validate({ answers: [{ text: 'A', correct: true }] }).length > 0);
+    assert.strictEqual(QuestionTypes[type].validate({ answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] }).length, 0);
+  }
+});
+
 test('guesssong/guesssound: validate() requires an attached audio clip, same precedent as image-pin requiring an image', ({ QuestionTypes }) => {
-  for (const type of ['guesssong', 'guesssound']) {
-    const noAudio = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: null } });
+  const answers = [{ text: 'A', correct: true }, { text: 'B', correct: false }];
+  for (const type of AUDIO_TILE_TYPES) {
+    const noAudio = QuestionTypes[type].validate({ answers, media: { image: null, video: null, audio: null } });
     assert.ok(noAudio.some(p => /audio/i.test(p)), `${type} without audio should be flagged`);
-    const withAudio = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: 'abc123' } });
-    assert.strictEqual(withAudio.length, 0, `${type} with audio and an accepted answer should validate cleanly`);
+    const withAudio = QuestionTypes[type].validate({ answers, media: { image: null, video: null, audio: 'abc123' } });
+    assert.strictEqual(withAudio.length, 0, `${type} with audio and valid answers should validate cleanly`);
   }
 });
 
 test('guesssong/guesssound: sanitize keeps a valid clip length, drops an invalid one', ({ QuestionTypes }) => {
-  const good = QuestionTypes.guesssong.sanitize({ accepted: ['Song'], audioClipSeconds: 8 });
+  const answers = [{ text: 'A', correct: true }];
+  const good = QuestionTypes.guesssong.sanitize({ answers, audioClipSeconds: 8 });
   assert.strictEqual(good.audioClipSeconds, 8);
-  const bad = QuestionTypes.guesssound.sanitize({ accepted: ['Sound'], audioClipSeconds: 999 });
+  const bad = QuestionTypes.guesssound.sanitize({ answers, audioClipSeconds: 999 });
   assert.strictEqual(bad.audioClipSeconds, null);
 });
 
-test('scramble/guesssong/guesssound: isCorrect and sanitizeSubmission behave exactly like typed (shared implementation)', ({ QuestionTypes }) => {
-  for (const type of ['scramble', 'guesssong', 'guesssound']) {
-    const q = { accepted: ['Elephant', 'elephant seal'] };
-    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'ELEPHANT' }), true, `${type} should match case-insensitively`);
-    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'giraffe' }), false);
-    assert.strictEqual(QuestionTypes[type].isCorrect(q, null), false);
-    jsonEqual(QuestionTypes[type].sanitizeSubmission(q, { text: '  Elephant  ' }), { text: 'Elephant' });
-    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { text: 123 }), null, 'a non-string submission must be rejected, not coerced');
-    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, {}), null);
-  }
-});
-
-test('blur/zoom/silhouette/puzzlereveal: isCorrect and sanitizeSubmission behave exactly like typed (shared implementation)', ({ QuestionTypes }) => {
-  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
-    const q = { accepted: ['Elephant'] };
-    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'elephant' }), true, `${type} should match case-insensitively`);
-    assert.strictEqual(QuestionTypes[type].isCorrect(q, { text: 'giraffe' }), false);
-    jsonEqual(QuestionTypes[type].sanitizeSubmission(q, { text: '  Elephant  ' }), { text: 'Elephant' });
-    assert.strictEqual(QuestionTypes[type].sanitizeSubmission(q, { text: 123 }), null);
-  }
-});
-
 test('blur/zoom/silhouette/puzzlereveal: validate() requires an attached image, same precedent as image-pin', ({ QuestionTypes }) => {
-  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
-    const noImage = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: null, video: null, audio: null } });
+  const answers = [{ text: 'A', correct: true }, { text: 'B', correct: false }];
+  for (const type of IMAGE_TILE_TYPES) {
+    const noImage = QuestionTypes[type].validate({ answers, media: { image: null, video: null, audio: null } });
     assert.ok(noImage.some(p => /image/i.test(p)), `${type} without an image should be flagged`);
-    const withImage = QuestionTypes[type].validate({ accepted: ['answer'], media: { image: 'abc123', video: null, audio: null } });
-    assert.strictEqual(withImage.length, 0, `${type} with an image and an accepted answer should validate cleanly`);
+    const withImage = QuestionTypes[type].validate({ answers, media: { image: 'abc123', video: null, audio: null } });
+    assert.strictEqual(withImage.length, 0, `${type} with an image and valid answers should validate cleanly`);
   }
 });
 
-test('blur/zoom/silhouette/puzzlereveal player payloads carry no accepted-answer data', ({ QuestionTypes }) => {
-  for (const type of ['blur', 'zoom', 'silhouette', 'puzzlereveal']) {
-    jsonEqual(QuestionTypes[type].playerPayload({ accepted: ['elephant'] }, {}), {});
-  }
+test('scramble: hostRender scrambles the CORRECT answer\'s letters, not an uncorrect one', ({ QuestionTypes }) => {
+  const fakeEl = { innerHTML: '', className: '' };
+  const q = { answers: [{ text: 'Wrong', correct: false }, { text: 'Elephant', correct: true }] };
+  QuestionTypes.scramble.hostRender(fakeEl, q);
+  assert.ok(fakeEl.innerHTML.includes('scramble-letter'), 'should render scrambled letter tiles');
+  const lettersOnly = [...fakeEl.innerHTML.matchAll(/scramble-letter">([A-Z])</g)].map(m => m[1]).sort().join('');
+  assert.strictEqual(lettersOnly, 'ELEPHANT'.split('').sort().join(''), 'must scramble the CORRECT answer ("Elephant"), not the wrong one');
 });
 
 test('finishlyrics: validate() requires an attached audio clip and at least 2 answers with one marked correct, same as mc + guesssong', ({ QuestionTypes }) => {
@@ -600,6 +602,36 @@ test('migrateQuiz: fills in type/media on legacy questions', (sb) => {
   jsonEqual(migrated.questions[0].media, { image: null, image2: null, video: null, audio: null });
 });
 
+test('migrateQuiz: a quiz saved before typed/scramble/etc. switched from typing to tap-a-tile still loads, with its one real answer preserved as the first (correct) tile', (sb) => {
+  const legacy = {
+    title: 'Old quiz',
+    questions: [
+      { type: 'typed', text: 'Capital of France?', time: 20, points: 'standard', media: sb.emptyMedia(), accepted: ['Paris', 'paris, france'] },
+      { type: 'guesssong', text: 'Name the song', time: 20, points: 'standard', media: { image: null, video: null, audio: 'clip1' }, accepted: ['Bohemian Rhapsody'], audioClipSeconds: 10 },
+    ],
+  };
+  const migrated = sb.migrateQuiz(legacy);
+  const [typedQ, songQ] = migrated.questions;
+  assert.strictEqual(typedQ.accepted, undefined, 'the old field must not linger alongside the new one');
+  assert.strictEqual(typedQ.answers.length, 4);
+  assert.strictEqual(typedQ.answers[0].text, 'Paris');
+  assert.strictEqual(typedQ.answers[0].correct, true);
+  assert.ok(typedQ.answers.slice(1).every(a => a.text === '' && a.correct === false), 'the other 3 slots start blank for the host to fill with decoys');
+  assert.strictEqual(songQ.answers[0].text, 'Bohemian Rhapsody');
+  assert.strictEqual(songQ.answers[0].correct, true);
+  assert.strictEqual(songQ.audioClipSeconds, 10, 'fields outside the accepted/answers migration must be untouched');
+  // A migrated question is honestly incomplete (needs real decoys) until
+  // the host fills them in — same validation path as any other mc-style
+  // question with only 1 of 2+ required answers filled.
+  assert.ok(sb.validateQuiz(migrated).some(p => /needs at least 2 answers/.test(p)));
+});
+
+test('sanitizeQuestion/importQuizJson: an old exported quiz using "accepted" for these types imports cleanly instead of silently losing its answer', (sb) => {
+  const q = sb.sanitizeQuestion({ type: 'blur', text: 'What is this?', media: { image: 'img1' }, accepted: ['Elephant'] });
+  assert.strictEqual(q.answers[0].text, 'Elephant');
+  assert.strictEqual(q.answers[0].correct, true);
+});
+
 test('sanitizeQuestion: unknown/malformed input falls back to safe defaults', (sb) => {
   const q = sb.sanitizeQuestion({ type: 'bogus', text: 'x'.repeat(999), time: 999, points: 'nope', answers: 'not-an-array' });
   assert.strictEqual(q.type, 'mc');
@@ -674,10 +706,14 @@ test('order.sanitize / poll.sanitize: capped at ORDER_MAX / POLL_MAX', ({ Questi
   assert.strictEqual(QuestionTypes.poll.sanitize({ options: many }).options.length, POLL_MAX);
 });
 
-test('typed.sanitize: accepted answers coerced to strings, capped at a reasonable maximum', ({ QuestionTypes, TYPED_MAX_ACCEPTED }) => {
-  const out = QuestionTypes.typed.sanitize({ accepted: Array.from({ length: 50 }, (_, i) => (i % 2 ? i : { toString: () => 'x' })) });
-  assert.ok(out.accepted.length <= TYPED_MAX_ACCEPTED);
-  out.accepted.forEach(a => assert.strictEqual(typeof a, 'string'));
+test('typed.sanitize: wrong field types and oversized arrays are rebuilt safely, capped at 4 (same shape as mc now that it is tap-a-tile too)', ({ QuestionTypes }) => {
+  const raw = { answers: Array.from({ length: 20 }, (_, i) => ({ text: i, correct: i === 0 ? 'yes' : 12345 })) };
+  const out = QuestionTypes.typed.sanitize(raw);
+  assert.strictEqual(out.answers.length, 4);
+  out.answers.forEach(a => {
+    assert.strictEqual(typeof a.text, 'string');
+    assert.strictEqual(typeof a.correct, 'boolean');
+  });
 });
 
 test('slider.sanitize: NaN/Infinity/string-object garbage never survives, min<max always holds', ({ QuestionTypes }) => {
@@ -1175,11 +1211,26 @@ test('handleAnswer/order: exact length, integer indexes in range, no duplicates'
   jsonEqual(good.submission, { order: [2, 0, 1] });
 }, { loader: loadGameSandbox });
 
-test('handleAnswer/typed & wordcloud & open: only real strings, coerced and capped to the phone\'s own limits', (sb) => {
+test('handleAnswer/typed: tap-a-tile, graded by index exactly like mc (no typing)', (sb) => {
+  const quiz = { title: 'T', questions: [{ type: 'typed', text: 'Q', media: sb.emptyMedia(), time: 20, points: 'standard', answers: [{ text: 'A', correct: true }, { text: 'B', correct: false }] }] };
+  const game = new sb.HostGame(quiz);
+  addNonAnsweringDummy(game);
+  game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
+  const conn = fakeConn('c1');
+  for (const bad of [NaN, Infinity, 'x', {}, [], -1, 2, 1.5, null, undefined]) {
+    const p = mkPlayer(conn); game.players.set('c1', p);
+    game.handleAnswer(conn, { t: 'a', i: 0, a: { c: bad } });
+    assert.strictEqual(p.submission, null, `typed must reject c=${JSON.stringify(bad)}`);
+  }
+  const good = mkPlayer(conn); game.players.set('c1', good);
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { c: 0 } });
+  jsonEqual(good.submission, { c: 0 });
+}, { loader: loadGameSandbox });
+
+test('handleAnswer/wordcloud & open: only real strings, coerced and capped to the phone\'s own limits', (sb) => {
   const quiz = {
     title: 'T',
     questions: [
-      { type: 'typed', text: 'Q1', media: sb.emptyMedia(), time: 20, points: 'standard', accepted: ['answer'] },
       { type: 'wordcloud', text: 'Q2', media: sb.emptyMedia(), time: 20, points: 'none' },
       { type: 'open', text: 'Q3', media: sb.emptyMedia(), time: 20, points: 'none' },
     ],
@@ -1188,29 +1239,19 @@ test('handleAnswer/typed & wordcloud & open: only real strings, coerced and capp
   const conn = fakeConn('c1');
 
   game.qIndex = 0; game.phase = 'question'; game.qStartedAt = Date.now();
-  for (const bad of [{}, [], 123, null, undefined, true]) {
-    const p = mkPlayer(conn); game.players.set('c1', p);
-    game.handleAnswer(conn, { t: 'a', i: 0, a: { text: bad } });
-    assert.strictEqual(p.submission, null, `typed must reject text=${JSON.stringify(bad)}`);
-  }
-  const longTyped = mkPlayer(conn); game.players.set('c1', longTyped);
-  game.handleAnswer(conn, { t: 'a', i: 0, a: { text: 'x'.repeat(500) } });
-  assert.strictEqual(longTyped.submission.text.length, 60, 'typed must cap to the phone\'s 60-char maxlength');
-
-  game.qIndex = 1; game.phase = 'question'; game.qStartedAt = Date.now();
   const wcBad = mkPlayer(conn); game.players.set('c1', wcBad);
-  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: {} } });
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { text: {} } });
   assert.strictEqual(wcBad.submission, null);
   const wcLong = mkPlayer(conn); game.players.set('c1', wcLong);
-  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: 'y'.repeat(500) } });
+  game.handleAnswer(conn, { t: 'a', i: 0, a: { text: 'y'.repeat(500) } });
   assert.strictEqual(wcLong.submission.text.length, 24, 'word cloud must cap to 24 characters');
 
-  game.qIndex = 2; game.phase = 'question'; game.qStartedAt = Date.now();
+  game.qIndex = 1; game.phase = 'question'; game.qStartedAt = Date.now();
   const openBad = mkPlayer(conn); game.players.set('c1', openBad);
-  game.handleAnswer(conn, { t: 'a', i: 2, a: { text: [] } });
+  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: [] } });
   assert.strictEqual(openBad.submission, null);
   const openLong = mkPlayer(conn); game.players.set('c1', openLong);
-  game.handleAnswer(conn, { t: 'a', i: 2, a: { text: 'z'.repeat(1000) } });
+  game.handleAnswer(conn, { t: 'a', i: 1, a: { text: 'z'.repeat(1000) } });
   assert.strictEqual(openLong.submission.text.length, 240, 'open-ended must cap to 240 characters');
 }, { loader: loadGameSandbox });
 
@@ -1507,6 +1548,29 @@ test('mediaHtml: embeds a valid videoEmbed as an iframe, re-validating rather th
   const hostile = ctx.mediaHtml({}, { provider: 'youtube', ref: '"><script>alert(1)</script>' });
   assert.ok(!hostile.includes('<script>'), 'a value that fails re-validation must never reach the iframe src');
   assert.strictEqual(ctx.mediaHtml({}, null), '', 'no videoEmbed -> no iframe at all');
+});
+
+test('buildWatchUrl: a real youtube.com watch link for YouTube only, never nocookie, never for other providers', ({ buildWatchUrl }) => {
+  const yt = buildWatchUrl({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 30 });
+  assert.strictEqual(yt, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30s');
+  const ytNoStart = buildWatchUrl({ provider: 'youtube', ref: 'dQw4w9WgXcQ', start: null });
+  assert.strictEqual(ytNoStart, 'https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+  assert.strictEqual(buildWatchUrl({ provider: 'vimeo', ref: '76979871' }), null, 'only youtube has this fallback — vimeo/facebook/custom embeds do not need it');
+  assert.strictEqual(buildWatchUrl({ provider: 'facebook', ref: 'https://www.facebook.com/x/videos/1/' }), null);
+  assert.strictEqual(buildWatchUrl(null), null);
+  // a claimed provider that doesn't match what the ref re-detects as must
+  // never be trusted — same discipline as buildEmbedSrc
+  assert.strictEqual(buildWatchUrl({ provider: 'youtube', ref: 'https://vimeo.com/76979871' }), null);
+});
+
+test('mediaHtml: a YouTube embed also renders the "Watch on YouTube" fallback link (real watch URL, not the nocookie embed domain); other providers get no such link', ({ ctx }) => {
+  const yt = ctx.mediaHtml({}, { provider: 'youtube', ref: 'dQw4w9WgXcQ', start: 30, end: null });
+  // esc() HTML-escapes "&" to "&amp;" in the href attribute — that's correct
+  // escaping, not a different URL, so check for the escaped form here.
+  assert.ok(yt.includes('https://www.youtube.com/watch?v=dQw4w9WgXcQ&amp;t=30s'), 'fallback link must be a real watch URL');
+  assert.ok(!yt.includes('href="https://www.youtube-nocookie.com'), 'the fallback link itself must not point at the embed-only domain');
+  const vimeo = ctx.mediaHtml({}, { provider: 'vimeo', ref: '76979871', start: null, end: null });
+  assert.ok(!vimeo.includes('q-media-embed-fallback'), 'vimeo needs no YouTube-specific fallback link');
 });
 
 test('privacy: a question\'s videoEmbed never reaches the broadcast "q" message players receive', async (sb) => {
